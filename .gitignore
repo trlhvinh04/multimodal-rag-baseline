@@ -23,3 +23,6 @@ venv.bak/
 # !.vscode/extensions.json
 # *.sublime-project
 # *.sublime-workspace
+
+# Data files
+data/raw/
