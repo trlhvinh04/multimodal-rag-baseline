@@ -45,9 +45,9 @@ def get_image_base64(
             image = Image.open(image_path)
         if image.mode != "RGB":
             image = image.convert("RGB")
-        image.thumbnail((1024, 1024))
+        image.thumbnail(default_config.max_image_size)
         buffered = io.BytesIO()
-        image.save(buffered, format="JPEG")
+        image.save(buffered, format=default_config.image_format)
         img_byte = buffered.getvalue()
         return base64.b64encode(img_byte).decode("utf-8")
     except FileNotFoundError:
@@ -61,7 +61,7 @@ def get_image_base64(
 def generate_caption_with_gemini(
     image: PIL.Image.Image = None,
     image_path: str = None,
-    prompt: str = "Describe this image in detail to be used as a caption. Focus on the main subjects, actions, and setting.",
+    prompt: str = default_config.default_prompt,
 ) -> Union[str, None]:
     if image is None and image_path is None:
         raise ValueError("Either image or image_path must be provided")
