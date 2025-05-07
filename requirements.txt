@@ -1,11 +1,15 @@
-transformers==4.37.2
-torch==2.2.0
-torchvision==0.17.0
+transformers>=4.37.2
+torch==2.2.2
+torchvision==0.17.2
 Pillow==10.2.0
-langchain== 0.3.24
-PyMuPDF==1.23.8  # for fitz (PDF processing)
+langchain>=0.3.24
+PyMuPDF==1.23.8 # for fitz (PDF processing)
 tqdm==4.66.1     # for progress bars
-langchain_google_genai==2.1.4
+langchain-google-genai>=2.1.4
 matplotlib==3.10.1
 ipywidgets
 accelerate==1.6.0
+docling==2.31.0
+langchain-core>=0.3.55
+tokenizers>=0.19.1
+langchain-huggingface>=0.1.2
