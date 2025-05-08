@@ -1,8 +1,30 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+test*.*
+
+# Environments
 .env
-*.xlsx
-*.csv
+.venv
+env/
+venv/
+ENV/
 src/
-*.png
-*.jpeg
-__pycache__
-.history
+env.bak/
+venv.bak/
+img/
+
+# IDE configuration files
+.idea/            # JetBrains IDEs (PyCharm, IntelliJ)
+.vscode/          # Visual Studio Code (allow .vscode/launch.json and .vscode/tasks.json if team shares them)
+# .vscode/*
+# !.vscode/settings.json
+# !.vscode/tasks.json
+# !.vscode/launch.json
+# !.vscode/extensions.json
+# *.sublime-project
+# *.sublime-workspace
+
+# Data files
+data/raw/
