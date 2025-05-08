@@ -10,8 +10,10 @@ test*.*
 env/
 venv/
 ENV/
+src/
 env.bak/
 venv.bak/
+img/
 
 # IDE configuration files
 .idea/            # JetBrains IDEs (PyCharm, IntelliJ)
