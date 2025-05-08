@@ -68,7 +68,6 @@ def vector_search(embedding_model, user_query, collection, limit=4):
         "$project": {
             "_id": 0,
             "title": 1,
-            # "product_specs": 1,
             "chunk": 1,
             "score": {
                 "$meta": "vectorSearchScore"
@@ -77,8 +76,6 @@ def vector_search(embedding_model, user_query, collection, limit=4):
     }
 
     pipeline = [vector_search_stage, unset_stage, project_stage]
-
-    # Execute the search
     results = collection.aggregate(pipeline)
 
     return list(results)
