@@ -1,0 +1,31 @@
+[project]
+name = "my-project"  # You can change this to your project's name
+version = "0.1.0"
+description = "A description of your project."  # Add a description
+requires-python = ">=3.10"
+
+dependencies = [
+    # No main dependencies, they are moved to optional-dependencies
+]
+
+[project.optional-dependencies]
+dev = [
+    # Add development dependencies here, e.g., pytest, black, ruff
+]
+"dev-colpali" = [
+    "colpali_engine>=0.3.1",
+    "datasets",
+    "huggingface_hub[hf_transfer]",
+    "qdrant-client",
+    "transformers>=4.45.0",
+    "stamina",
+    "rich",
+    "loguru"
+]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+exclude = ["data*", "configs*", "notebooks*"] 
