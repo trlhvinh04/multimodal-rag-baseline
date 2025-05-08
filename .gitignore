@@ -4,3 +4,5 @@
 src/
 *.png
 *.jpeg
+__pycache__
+.history
