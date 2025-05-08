@@ -1,3 +1,25 @@
+"""
+Script dùng cho mục đích đưa ảnh đầu vào với dạng PIL.Image.Image hoặc là đường dẫn đến file ảnh sau đó tạo ra caption cho ảnh đó.
+
+Có 2 cách để tạo ra caption là sử dụng:
+1. Gemini
+2. Local model
+
+Nếu sử dụng Gemini thì cần đưa GOOGLE_API_KEY vào trong .env file
+
+Nếu sử dụng local model thì cần tìm model checkpoint trên Hugging Face và thực hiện như sau:
+
+```python
+model_checkpoint = "Salesforce/blip-image-captioning-base"
+
+caption = generate_caption_with_local_model(
+        checkpoint=model_checkpoint,
+        image_path=image_path,
+    )
+```
+Nó sẽ tải mô hình từ Hugging Face và tạo ra caption cho ảnh đầu vào.
+"""
+
 import base64
 import io
 import logging
@@ -27,7 +49,7 @@ def get_image_base64(image: Optional[Image.Image] = None) -> Union[str, None]:
     """
     Get image base64
     Args:
-        image: PIL.Image.Image
+        image (PIL.Image): PIL Image object
     Returns:
         str: image base64
     """
@@ -56,10 +78,10 @@ def load_pil_image(
     """
     Load PIL image
     Args:
-        image: PIL.Image.Image
-        image_path: str
+        image (PIL.Image): PIL Image object
+        image_path (str): Path to image file
     Returns:
-        PIL.Image.Image: PIL image
+        PIL.Image: PIL image
     """
     if image is not None:
         if isinstance(image, Image.Image):
@@ -93,7 +115,7 @@ def get_llm_vision_gemini() -> Optional[ChatGoogleGenerativeAI]:
     """
     Get LLM vision Gemini
     Returns:
-        langchain_google_genai.ChatGoogleGenerativeAI: LLM vision Gemini
+        ChatGoogleGenerativeAI: LLM vision Gemini
     """
     try:
         api_key = os.environ.get("GOOGLE_API_KEY")
@@ -120,11 +142,11 @@ def generate_caption_with_gemini(
     """
     Generate caption with Gemini
     Args:
-        image: PIL.Image.Image
-        image_path: str
-        prompt: str
+        image (PIL.Image): PIL Image object
+        image_path (str): Path to image file
+        prompt (str): Prompt for image captioning
     Returns:
-        str: caption
+        str: Generated caption
     """
     from langchain_core.messages import HumanMessage
 
@@ -178,9 +200,9 @@ def get_llm_vision_local(
     """
     Get LLM vision local
     Args:
-        checkpoint: str
+        checkpoint (str): Model checkpoint on Hugging Face, example: "Salesforce/blip-image-captioning-base"
     Returns:
-        Tuple[Any, Any]: processor and model
+        tuple: processor and model
     """
     import torch
     from transformers import (
@@ -223,11 +245,13 @@ def generate_caption_with_local_model(
     """
     Generate caption with local model
     Args:
-        checkpoint: str
-        image: PIL.Image.Image
-        image_path: str
-        prompt: str
-        processor_and_model: Tuple[Any, Any]
+        checkpoint (str): Model checkpoint on Hugging Face
+        image (PIL.Image): PIL Image object
+        image_path (str): Path to image file
+        prompt (str): Prompt for image captioning
+        processor_and_model (tuple): Tuple of processor and model
+    Returns:
+        str: Generated caption
     """
     from accelerate.test_utils.testing import get_backend
 
