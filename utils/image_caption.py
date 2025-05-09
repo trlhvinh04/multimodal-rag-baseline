@@ -1,22 +1,105 @@
+"""
+Script dùng cho mục đích đưa ảnh đầu vào với dạng PIL.Image.Image hoặc là đường dẫn đến file ảnh sau đó tạo ra caption cho ảnh đó.
+
+Có 2 cách để tạo ra caption là sử dụng:
+1. Gemini
+2. Local model
+
+Nếu sử dụng Gemini thì cần đưa GOOGLE_API_KEY vào trong .env file
+
+Nếu sử dụng local model thì cần tìm model checkpoint trên Hugging Face và thực hiện như sau:
+
+```python
+model_checkpoint = "Salesforce/blip-image-captioning-base"
+
+caption = generate_caption_with_local_model(
+        checkpoint=model_checkpoint,
+        image_path=image_path,
+    )
+```
+Nó sẽ tải mô hình từ Hugging Face và tạo ra caption cho ảnh đầu vào.
+"""
+
 import base64
+import functools
 import io
 import logging
 import os
 import sys
-from time import time
-from typing import Any, Optional, Tuple, Union
+from time import perf_counter
+from typing import Any, Callable, Optional, Tuple, Union
 
 import PIL
 from langchain_google_genai import ChatGoogleGenerativeAI
 from PIL import Image
 from pydantic import BaseModel, Field
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from configs.thangquang_config import default_config
-
-logging.basicConfig(level=default_config.log_level)
+logging.basicConfig(level="INFO")
 logger = logging.getLogger(__name__)
+
+
+class DefaultConfig:
+    # LLM Vision Model Configuration
+    model_name: str = "gemini-1.5-flash"
+    temperature: float = 0.3
+    max_output_tokens: int = 100
+
+    # Image Processing Configuration
+    max_image_size: tuple[int, int] = (1024, 1024)
+    image_format: str = "JPEG"
+
+    # Default Prompt Configuration
+    default_prompt: str = "Describe this image in detail to be used as a caption. Focus on the main subjects, actions, and setting."
+
+
+class Timer:
+    """A context manager for timing code blocks with nested timing support"""
+
+    _timers: dict[str, float] = {}  # Class variable to store all timings
+
+    def __init__(self, name: str, logger_instance: logging.Logger):
+        self.name = name
+        self.logger = logger_instance
+        self.start_time = None
+        self.parent = None
+
+    def __enter__(self):
+        self.start_time = perf_counter()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if self.start_time is not None:
+            duration = perf_counter() - self.start_time
+            Timer._timers[self.name] = duration
+            self.logger.info(f"Step '{self.name}' took {duration:.4f} seconds")
+
+    @classmethod
+    def get_timer(cls, name: str) -> float:
+        """Get the duration of a specific timer"""
+        return cls._timers.get(name, 0.0)
+
+    @classmethod
+    def clear_timers(cls):
+        """Clear all stored timings"""
+        cls._timers.clear()
+
+
+def time_function(name: Optional[str] = None) -> Callable:
+    """Decorator for timing functions"""
+
+    def decorator(func: Callable) -> Callable:
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            timer_name = name or func.__name__
+            with Timer(timer_name, logger):
+                return func(*args, **kwargs)
+
+        return wrapper
+
+    return decorator
+
+
+default_config = DefaultConfig()
 
 
 class ImageCaptionOutput(BaseModel):
@@ -27,17 +110,17 @@ def get_image_base64(image: Optional[Image.Image] = None) -> Union[str, None]:
     """
     Get image base64
     Args:
-        image: PIL.Image.Image
+        image (PIL.Image): PIL Image object
     Returns:
         str: image base64
     """
+    if image is None:
+        logger.error("No image provided")
+        return None
+    if not isinstance(image, Image.Image):
+        logger.error("Image must be a PIL.Image.Image object")
+        return None
     try:
-        if image is None:
-            logger.error("No image provided")
-            return None
-        if not isinstance(image, Image.Image):
-            logger.error("Image must be a PIL.Image.Image object")
-            return None
         image = image.convert("RGB")
         image.thumbnail(default_config.max_image_size, Image.Resampling.LANCZOS)
 
@@ -56,10 +139,10 @@ def load_pil_image(
     """
     Load PIL image
     Args:
-        image: PIL.Image.Image
-        image_path: str
+        image (PIL.Image): PIL Image object
+        image_path (str): Path to image file
     Returns:
-        PIL.Image.Image: PIL image
+        PIL.Image: PIL image
     """
     if image is not None:
         if isinstance(image, Image.Image):
@@ -73,7 +156,7 @@ def load_pil_image(
                 logger.error(f"File image not found at path: {image_path}")
                 return None
             return Image.open(image_path)
-        except FileNotFoundError:  # Thực tế đã check ở trên
+        except FileNotFoundError:
             logger.error(f"File image not found at path: {image_path}")
             return None
         except PIL.UnidentifiedImageError:
@@ -89,11 +172,12 @@ def load_pil_image(
         return None
 
 
+@time_function("get_llm_vision_gemini")
 def get_llm_vision_gemini() -> Optional[ChatGoogleGenerativeAI]:
     """
     Get LLM vision Gemini
     Returns:
-        langchain_google_genai.ChatGoogleGenerativeAI: LLM vision Gemini
+        ChatGoogleGenerativeAI: LLM vision Gemini
     """
     try:
         api_key = os.environ.get("GOOGLE_API_KEY")
@@ -112,19 +196,21 @@ def get_llm_vision_gemini() -> Optional[ChatGoogleGenerativeAI]:
         return None
 
 
+@time_function("generate_caption_with_gemini")
 def generate_caption_with_gemini(
     image: Optional[Image.Image] = None,
     image_path: Optional[str] = None,
+    client: Optional[ChatGoogleGenerativeAI] = None,
     prompt: str = default_config.default_prompt,
 ) -> Union[str, None]:
     """
     Generate caption with Gemini
     Args:
-        image: PIL.Image.Image
-        image_path: str
-        prompt: str
+        image (PIL.Image): PIL Image object
+        image_path (str): Path to image file
+        prompt (str): Prompt for image captioning
     Returns:
-        str: caption
+        str: Generated caption
     """
     from langchain_core.messages import HumanMessage
 
@@ -136,7 +222,10 @@ def generate_caption_with_gemini(
         return None
 
     # create llm_vision
-    llm_vision = get_llm_vision_gemini()
+    if client is None:
+        llm_vision = get_llm_vision_gemini()
+    else:
+        llm_vision = client
     if not llm_vision:
         logger.error("Model not found")
         return None
@@ -158,29 +247,26 @@ def generate_caption_with_gemini(
     human_message = HumanMessage(content=message_content)
 
     # sending request
-    start_time = time()
     try:
         logger.info("Sending Request")
         response = llm_with_structed_output.invoke([human_message])
         caption = response.image_captions
-        end_time = time()
-        logger.info(f"Time taken: {end_time - start_time:.4f} seconds")
-        # print(f"Response: {caption}")
         return caption.strip() if isinstance(caption, str) else str(caption).strip()
     except Exception as e:
         logger.error(f"Error: {e}")
         return None
 
 
+@time_function("get_llm_vision_local")
 def get_llm_vision_local(
     checkpoint: Optional[str] = None,
 ) -> Tuple[Any, Any]:
     """
     Get LLM vision local
     Args:
-        checkpoint: str
+        checkpoint (str): Model checkpoint on Hugging Face, example: "Salesforce/blip-image-captioning-base"
     Returns:
-        Tuple[Any, Any]: processor and model
+        tuple: processor and model
     """
     import torch
     from transformers import (
@@ -194,7 +280,6 @@ def get_llm_vision_local(
         logger.error("Checkpoint not found")
         return None, None
     logger.info(f"Loading model from {checkpoint}")
-    start_time = time()
     try:
         processor = AutoProcessor.from_pretrained(
             checkpoint, use_fast=True, trust_remote_code=True
@@ -208,11 +293,10 @@ def get_llm_vision_local(
     except Exception as e:
         logger.error(f"Error loading model: {e}")
         return None, None
-    end_time = time()
-    logger.info(f"Loading model time taken: {end_time - start_time:.4f} seconds")
     return processor, model
 
 
+@time_function("generate_caption_with_local_model")
 def generate_caption_with_local_model(
     checkpoint: Optional[str] = None,
     image: Optional[Image.Image] = None,
@@ -223,11 +307,13 @@ def generate_caption_with_local_model(
     """
     Generate caption with local model
     Args:
-        checkpoint: str
-        image: PIL.Image.Image
-        image_path: str
-        prompt: str
-        processor_and_model: Tuple[Any, Any]
+        checkpoint (str): Model checkpoint on Hugging Face
+        image (PIL.Image): PIL Image object
+        image_path (str): Path to image file
+        prompt (str): Prompt for image captioning
+        processor_and_model (tuple): Tuple of processor and model
+    Returns:
+        str: Generated caption
     """
     from accelerate.test_utils.testing import get_backend
 
@@ -245,7 +331,6 @@ def generate_caption_with_local_model(
 
         processor, model = processor_and_model
 
-        start_time = time()
         device, _, _ = get_backend()
         inputs = processor(text=prompt, images=pil_image, return_tensors="pt").to(
             device
@@ -258,8 +343,6 @@ def generate_caption_with_local_model(
         generated_caption = processor.batch_decode(
             generated_ids, skip_special_tokens=True
         )[0]
-        end_time = time()
-        logger.info(f"Time taken: {end_time - start_time:.4f} seconds")
         return (
             generated_caption.strip()
             if isinstance(generated_caption, str)
@@ -271,7 +354,7 @@ def generate_caption_with_local_model(
 
 
 if __name__ == "__main__":
-    image_path = "data/raw/imgs/image.png"  # Paste your image path here
+    image_path = "notebooks/Docling/anh-con-cho-51.jpg"  # Paste your image path here
 
     print("Generating caption with local model")
 
