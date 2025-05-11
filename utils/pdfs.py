@@ -47,5 +47,5 @@ def get_images_from_pdf(pdf_path, max_pages=None,dpi_resolution=144,
     return images
 
 if __name__ == '__main__':
-    get_images_from_pdf(pdf_path='/home/tiamo/multimodal-rag-baseline/data/c0849d57260bcc2e2f8a399cb1eeb8e7.pdf',save_dir='/home/tiamo/multimodal-rag-baseline/data/images',save_images=True)
+    get_images_from_pdf(pdf_path='/home/tiamo/multimodal-rag-baseline/data/3e8e568ec576f0189cee0b6032720054.pdf',save_dir='/home/tiamo/multimodal-rag-baseline/data/images',save_images=True)
     
