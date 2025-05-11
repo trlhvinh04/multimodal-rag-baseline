@@ -6,14 +6,21 @@ import os
 import json
 from google import genai
 from google.genai import types
+## ------- COLAB CODE -------
+# from google.colab import userdata
+# GEMINI_API_KEY = userdata.get('GOOGLE_API_KEY')
+
+## ------- KAGGLE CODE -------
+# from kaggle_secrets import UserSecretsClient
+# user_secrets = UserSecretsClient()
+# GEMINI_API_KEY = user_secrets.get_secret("GOOGLE_API_KEY")
+
+## ------- LOCAL CODE -------
 from dotenv import load_dotenv
-
 load_dotenv()
-
 GEMINI_API_KEY = os.getenv("GOOGLE_API_KEY")
 
-
-def generate(prompt: str) -> dict:
+def generate(prompt):
     model = "gemini-2.0-flash-lite"
     client = genai.Client(
         api_key=GEMINI_API_KEY,
@@ -77,9 +84,10 @@ Below is the table data:"""
         config=generate_content_config,
     )
     output_tokens = client.models.count_tokens(model=model, contents=response.text)
-    print(f"Input tokens: {input_tokens}")
-    print(f"Output tokens: {output_tokens}")
 
     json_response = json.loads(response.text)
-
+    json_response.update({
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens
+    })
     return json_response
