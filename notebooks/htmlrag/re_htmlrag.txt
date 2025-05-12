@@ -1,0 +1,5 @@
+htmlrag
+rank_bm25
+
+
+# hiện tại pured đang chưa truy xuất được, để thử thêm vài lần coi kĩ do hiện chưa coi kĩ code của họ
