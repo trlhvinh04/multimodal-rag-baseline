@@ -1,12 +1,11 @@
-import time
 import logging
-from typing import Union
+import time
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union, cast
 
 import numpy as np
 import pandas as pd
 from check_using_api import generate
 from docling.datamodel.base_models import InputFormat
-from docling.datamodel.document import Document
 from docling.datamodel.pipeline_options import PdfPipelineOptions, TableFormerMode
 from docling.document_converter import DocumentConverter, PdfFormatOption
 from docling_core.types.doc.document import TableItem, TextItem
@@ -23,7 +22,6 @@ class PDFConverter:
         generate_page_images: bool = False,
         generate_picture_images: bool = False,
         images_scale: float = 1.0,
-        ocr_options=None,
         # ocr_options=EasyOcrOptions(force_full_page_ocr=True, lang=["en"]),  # Use EasyOCR for OCR
         # ocr_options=TesseractOcrOptions(force_full_page_ocr=True, lang=["eng"]),  # Uncomment to use Tesseract for OCR
         # ocr_options = OcrMacOptions(force_full_page_ocr=True, lang=['en-US']),
@@ -35,7 +33,6 @@ class PDFConverter:
             # ocr_options=EasyOcrOptions(force_full_page_ocr=True, lang=["en"]),  # Use EasyOCR for OCR
             # ocr_options=TesseractOcrOptions(force_full_page_ocr=True, lang=["eng"]),  # Uncomment to use Tesseract for OCR
             # ocr_options = OcrMacOptions(force_full_page_ocr=True, lang=['en-US']),
-            ocr_options=ocr_options,
             table_structure_options=dict(
                 # Use text cells predicted from table structure model
                 do_cell_matching=do_cell_matching,
@@ -52,7 +49,7 @@ class PDFConverter:
         }
         self.converter = DocumentConverter(format_options=format_options)
 
-    def convert(self, sources: Union[str, list[str]]) -> dict[str, Document]:
+    def convert(self, sources: Union[str, Sequence[str]]) -> Dict[str, Any]:
         """
         Convert PDF files to Docling Document objects.
 
@@ -118,7 +115,7 @@ def preprocess_df(df: pd.DataFrame) -> pd.DataFrame:
     return df_processed
 
 
-def solve_non_header_table(df: pd.DataFrame, target_headers: list) -> pd.DataFrame:
+def solve_non_header_table(df: pd.DataFrame, target_headers: List[str]) -> pd.DataFrame:
     """
     Convert headerless DataFrame by moving current column names to first data row,
     then assign target_headers
@@ -132,7 +129,8 @@ def solve_non_header_table(df: pd.DataFrame, target_headers: list) -> pd.DataFra
     """
     if not isinstance(target_headers, list):
         logging.warning(
-            "Warning: target_headers is not a list. Returning original DataFrame.")
+            "Warning: target_headers is not a list. Returning original DataFrame."
+        )
         return df.copy()
 
     df_copy = df.copy()
@@ -172,7 +170,7 @@ def solve_non_header_table(df: pd.DataFrame, target_headers: list) -> pd.DataFra
     return result_df.reset_index(drop=True)
 
 
-def get_column_types(df):
+def get_column_types(df: pd.DataFrame) -> List[str]:
     """
     Determine data types for each column
 
@@ -279,7 +277,7 @@ def get_input_df(
     return final_df_to_sample.to_csv(index=False, header=False, sep=sep)
 
 
-def _get_item_from_cref(docling_document: Document, cref: str):
+def _get_item_from_cref(docling_document: Any, cref: str) -> Optional[Union[TextItem, TableItem]]:
     """
     Get an item from a Docling Document object using a cref.
 
@@ -308,8 +306,8 @@ def _get_item_from_cref(docling_document: Document, cref: str):
 
 
 def extract_raw_tables_from_docling(
-    docling_document: Document, n_tokens_previous: int = 20
-) -> tuple[list[pd.DataFrame], str]:
+    docling_document: Any, n_tokens_previous: int = 20
+) -> Tuple[List[pd.DataFrame], str]:
     """
     Extract raw tables from a Docling Document object.
 
@@ -320,7 +318,7 @@ def extract_raw_tables_from_docling(
     Returns:
         A tuple containing a list of DataFrames and a string representation of the prompt.
     """
-    tables: list[pd.DataFrame] = []
+    tables: List[pd.DataFrame] = []
     full_prompt = ""
     table_index = 0
 
@@ -378,13 +376,14 @@ def extract_raw_tables_from_docling(
                 table_index += 1
 
     logging.info(
-        f"{len(tables)} tables extracted and processed with preceding context.")
+        f"{len(tables)} tables extracted and processed with preceding context."
+    )
     return tables, full_prompt
 
 
 def main_concatenation_logic(
-    tables: list[pd.DataFrame], concat_json: dict
-) -> list[pd.DataFrame]:
+    tables: List[pd.DataFrame], concat_json: Dict[str, Any]
+) -> List[pd.DataFrame]:
     """
     Concatenate DataFrames based on groups in concat_json.
     Headers are applied based on 'headers_info' from concat_json.
@@ -647,7 +646,7 @@ def main_concatenation_logic(
     return concatenated_results
 
 
-def extract_tables_from_sources(sources: list[str]) -> list[pd.DataFrame]:
+def extract_tables_from_sources(sources: List[str]) -> List[pd.DataFrame]:
     """
     Extract connected tables from a list of PDF files.
 
@@ -666,7 +665,7 @@ def extract_tables_from_sources(sources: list[str]) -> list[pd.DataFrame]:
     return concatenated_results
 
 
-def extract_tables_from_docling(docling_document: Document) -> list[pd.DataFrame]:
+def extract_tables_from_docling(docling_document: Any) -> List[pd.DataFrame]:
     """
     Extract tables from a Docling Document object.
 
@@ -681,7 +680,8 @@ def extract_tables_from_docling(docling_document: Document) -> list[pd.DataFrame
     concatenated_results = main_concatenation_logic(tables, concat_json)
     return concatenated_results
 
-def display_tables(tables: list[pd.DataFrame], n_rows: int = 3):
+
+def display_tables(tables: List[pd.DataFrame], n_rows: int = 3) -> None:
     """
     Display tables in a Jupyter Notebook.
 
@@ -690,6 +690,7 @@ def display_tables(tables: list[pd.DataFrame], n_rows: int = 3):
         n_rows: The number of rows to display.
     """
     from IPython.display import display
+
     for idx, table in enumerate(tables):
         print(f"Table {idx}:")
         display(table.head(n_rows))
