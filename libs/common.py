@@ -1,3 +1,8 @@
+import os
+import json
+import shutil
+import requests
+
 from sentence_transformers import SentenceTransformer
 import pathlib
 import textwrap
@@ -10,4 +15,5 @@ from langchain.embeddings import OpenAIEmbeddings
 from langchain.text_splitter import CharacterTextSplitter
 from dotenv import load_dotenv,find_dotenv
 import pytesseract
+from datasets import load_dataset
 pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
