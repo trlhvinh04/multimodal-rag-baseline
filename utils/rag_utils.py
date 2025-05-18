@@ -34,7 +34,7 @@ def get_embedding(embedding_model, text: str) -> list[float]:
 
 
 
-def vector_search(embedding_model, user_query, collection, limit=4):
+def vector_search(embedding_model, user_query, collection, limit=2):
     """
     Perform a vector search in the MongoDB collection based on the user query.
 
@@ -67,7 +67,7 @@ def vector_search(embedding_model, user_query, collection, limit=4):
     project_stage = {
         "$project": {
             "_id": 0,
-            "title": 1,
+            "table": 1,
             "chunk": 1,
             "score": {
                 "$meta": "vectorSearchScore"
@@ -82,14 +82,17 @@ def vector_search(embedding_model, user_query, collection, limit=4):
 
 
 def get_search_result(embedding_model, query, collection):
-    get_knowledge = vector_search(embedding_model, query, collection, 10)
+    get_knowledge = vector_search(embedding_model, query, collection, 2)
     search_result = ""
     i = 0
     for result in get_knowledge:
         print(result)
-        if result.get('chunk'):
+        if 'chunk' in result:
             i += 1
-            search_result += f"\n {i}) Content: {result.get('chunk')}"
+            summary = result['chunk']  # Có thể rút gọn hơn nếu cần
+            table = result.get('table', '')  # Nếu có trường 'table'
+
+            search_result += f"\n {i}) Summary: {summary}\n Table: {table}\n\n"
 
         
     return search_result
