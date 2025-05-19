@@ -99,6 +99,22 @@ def preprocess_df(df: pd.DataFrame) -> pd.DataFrame:
         return df
 
     df_processed = df.copy()
+    # Handle error: column with all None values and name starting with Col1, Col2, ...
+    # First, get columns with names starting with Col1, Col2, ...
+    col_names_with_prefix = [col for col in df_processed.columns if str(col).startswith("Col")]
+    # Then, check if all values are null
+    for col in col_names_with_prefix:
+        if df_processed[col].isnull().all():
+            df_processed.drop(col, axis=1, inplace=True)
+    
+    # When using PyMuPDF, missed column names often become Col1, Col2, Col3, ...
+    # So, convert these to None
+    df_processed.columns = [
+        None if str(col).startswith("Col") else col
+        for col in df_processed.columns
+    ]
+    df_processed = df_processed.replace(['<NA>', "None", "None ", None, ""], pd.NA)
+    df_processed = df_processed.dropna(how='all')
 
     # Handle case where column names are numbers
     if all(str(col).isdigit() for col in df_processed.columns):
@@ -307,7 +323,7 @@ def _get_item_from_cref(
     """
     try:
         parts = cref.strip("#/").split("/")
-        item_type = parts[0]  # 'texts' hoặc 'tables'
+        item_type = parts[0]  # 'texts' or 'tables'
         item_index = int(parts[1])
         if (
             item_type == "texts"
@@ -325,7 +341,7 @@ def _get_item_from_cref(
             return docling_document.tables[item_index]
         else:
             logging.warning(
-                f"Warning: Cref '{cref}' không hợp lệ hoặc không tìm thấy.")
+                f"Warning: Cref '{cref}' không hợp lệ hoặc không tìm thấy.") # Keep original Vietnamese log
             return None
     except (IndexError, ValueError, AttributeError) as e:
         logging.error(f"Error parsing cref '{cref}': {e}")
@@ -358,7 +374,7 @@ def extract_raw_tables_from_docling(
     )
 
     for i, item_ref in enumerate(doc_items):
-        # Kiểm tra xem item hiện tại có phải là một bảng không
+        # Check if the current item is a table
         if (
             hasattr(item_ref, "cref")
             and isinstance(item_ref.cref, str)
@@ -366,13 +382,13 @@ def extract_raw_tables_from_docling(
         ):
             table_item = _get_item_from_cref(docling_document, item_ref.cref)
 
-            # Chỉ xử lý nếu là TableItem hợp lệ và có label là TABLE
+            # Process only if it's a valid TableItem with TABLE label
             if isinstance(table_item, TableItem) and table_item.label in [
                 DocItemLabel.TABLE
             ]:
-                # --- Lấy ra page_number ---
+                # --- Get page_number ---
                 page_number = -1  # default value of page
-                # Di chuyển kiểm tra hasattr và table_item.prov lên trước
+                # Move hasattr and table_item.prov check up
                 if (
                     hasattr(table_item, "prov")
                     and isinstance(table_item.prov, list)
@@ -384,7 +400,7 @@ def extract_raw_tables_from_docling(
                     ):
                         page_number = (
                             first_provenance_item.page_no
-                        )  # Giả sử page_no đã là 1-indexed
+                        )  # Assume page_no is already 1-indexed
                     else:
                         logging.warning(
                             f"Attribute 'page_no' is missing, not an int, or None in the first ProvenanceItem for table {item_ref.cref}."
@@ -394,11 +410,11 @@ def extract_raw_tables_from_docling(
                         f"Attribute 'prov' is missing, not a list, or empty for table {item_ref.cref}. Cannot determine page number."
                     )
 
-                # --- Lấy ngữ cảnh văn bản phía trước ---
+                # --- Get preceding text context ---
                 previous_text_snippet = ""
-                if i > 0:  # Đảm bảo không phải là item đầu tiên
+                if i > 0:  # Ensure not the first item
                     prev_item_ref = doc_items[i - 1]
-                    # Kiểm tra xem item trước đó có phải là text không
+                    # Check if the previous item is text
                     if (
                         hasattr(prev_item_ref, "cref")
                         and isinstance(prev_item_ref.cref, str)
@@ -413,11 +429,11 @@ def extract_raw_tables_from_docling(
                             and prev_text_item.text
                         ):
                             words = prev_text_item.text.split()
-                            # Lấy n từ cuối cùng làm ngữ cảnh
+                            # Get the last n words as context
                             previous_text_snippet = " ".join(
                                 words[-n_tokens_previous:])
 
-                # --- Xử lý DataFrame của bảng ---
+                # --- Process table DataFrame ---
                 df = preprocess_df(table_item.export_to_dataframe())
                 if df.empty:
                     continue
@@ -425,7 +441,7 @@ def extract_raw_tables_from_docling(
                 column_types = get_column_types(df=df)
                 n_columns = len(df.columns)
 
-                # --- Xây dựng prompt ---
+                # --- Build prompt ---
                 prompt_part = ""
                 if previous_text_snippet:
                     prompt_part += f"Context before table:\n{previous_text_snippet}\n\n"
@@ -444,12 +460,12 @@ def extract_raw_tables_from_docling(
 
 def _build_header_details_map(concat_json: Dict[str, Any]) -> Dict[int, Dict[str, Any]]:
     """
-    Xây dựng một map từ table_index đến thông tin header của nó từ concat_json.
+    Build a map from table_index to its header information from concat_json.
     """
     header_details_map: Dict[int, Dict[str, Any]] = {}
     if not isinstance(concat_json, dict):
         logging.warning(
-            "Cảnh báo: concat_json không phải là dictionary. Không thể xây dựng header_details_map."
+            "Cảnh báo: concat_json không phải là dictionary. Không thể xây dựng header_details_map." # Keep original Vietnamese log
         )
         return header_details_map
 
@@ -457,7 +473,7 @@ def _build_header_details_map(concat_json: Dict[str, Any]) -> Dict[int, Dict[str
     if not isinstance(headers_info_list, list):
         if headers_info_list is not None:
             logging.warning(
-                "Cảnh báo: 'headers_info' trong concat_json không phải list."
+                "Cảnh báo: 'headers_info' trong concat_json không phải list." # Keep original Vietnamese log
             )
         return header_details_map
 
@@ -468,7 +484,7 @@ def _build_header_details_map(concat_json: Dict[str, Any]) -> Dict[int, Dict[str
             and "headers" in info_entry
         ):
             logging.warning(
-                f"Cảnh báo: Entry headers_info không hợp lệ: {info_entry}. Bỏ qua."
+                f"Cảnh báo: Entry headers_info không hợp lệ: {info_entry}. Bỏ qua." # Keep original Vietnamese log
             )
             continue
 
@@ -481,20 +497,20 @@ def _build_header_details_map(concat_json: Dict[str, Any]) -> Dict[int, Dict[str
                 table_indices = [table_indices]
             else:
                 logging.warning(
-                    f"Cảnh báo: 'table_index' trong headers_info không phải list hoặc int: {info_entry}. Bỏ qua."
+                    f"Cảnh báo: 'table_index' trong headers_info không phải list hoặc int: {info_entry}. Bỏ qua." # Keep original Vietnamese log
                 )
                 continue
 
         if not isinstance(headers, list):
             logging.warning(
-                f"Cảnh báo: 'headers' trong headers_info không phải list: {info_entry}. Bỏ qua."
+                f"Cảnh báo: 'headers' trong headers_info không phải list: {info_entry}. Bỏ qua." # Keep original Vietnamese log
             )
             continue
 
         for idx in table_indices:
             if not isinstance(idx, int):
                 logging.warning(
-                    f"Cảnh báo: Chỉ mục không phải int '{idx}' trong headers_info.table_index. Bỏ qua."
+                    f"Cảnh báo: Chỉ mục không phải int '{idx}' trong headers_info.table_index. Bỏ qua." # Keep original Vietnamese log
                 )
                 continue
             if idx not in header_details_map:
@@ -503,25 +519,25 @@ def _build_header_details_map(concat_json: Dict[str, Any]) -> Dict[int, Dict[str
 
     if not header_details_map:
         logging.info(
-            "Thông tin: 'header_details_map' rỗng sau khi xử lý 'headers_info'."
+            "Thông tin: 'header_details_map' rỗng sau khi xử lý 'headers_info'." # Keep original Vietnamese log
         )
     return header_details_map
 
 
 def _apply_headers_to_table(
-    df_original: pd.DataFrame,  # DataFrame gốc (chưa copy)
+    df_original: pd.DataFrame,  # Original DataFrame (not copied yet)
     target_headers: List[str],
     is_guessed: bool,
-) -> Optional[pd.DataFrame]:  # Trả về DataFrame đã xử lý hoặc None nếu lỗi nghiêm trọng
+) -> Optional[pd.DataFrame]:  # Returns processed DataFrame or None on critical error
     """
-    Áp dụng header cho DataFrame. Trả về DataFrame đã xử lý,
-    hoặc None nếu có lỗi không thể xử lý (ví dụ: số cột không khớp).
+    Apply headers to DataFrame. Returns processed DataFrame,
+    or None if unrecoverable error (e.g., column count mismatch).
     """
-    df_to_process = df_original.copy()  # Làm việc trên bản sao
+    df_to_process = df_original.copy()  # Work on a copy
     if len(df_to_process.columns) != len(target_headers):
         logging.warning(
-            f"Cảnh báo: Số cột không khớp khi áp dụng header. Bảng có {len(df_to_process.columns)} cột, "
-            f"header đích có {len(target_headers)} cột. Không thể xử lý header."
+            f"Cảnh báo: Số cột không khớp khi áp dụng header. Bảng có {len(df_to_process.columns)} cột, " # Keep original Vietnamese log
+            f"header đích có {len(target_headers)} cột. Không thể xử lý header." # Keep original Vietnamese log
         )
         return None
 
@@ -533,8 +549,8 @@ def _apply_headers_to_table(
             return df_to_process
         except ValueError as e:
             logging.error(
-                f"Lỗi nghiêm trọng khi gán target_headers trực tiếp: {e}. "
-                f"(DataFrame columns: {len(df_to_process.columns)}, target_headers length: {len(target_headers)})"
+                f"Lỗi nghiêm trọng khi gán target_headers trực tiếp: {e}. " # Keep original Vietnamese log
+                f"(DataFrame columns: {len(df_to_process.columns)}, target_headers length: {len(target_headers)})" # Keep original Vietnamese log
             )
             return None
 
@@ -544,147 +560,166 @@ def _process_concatenation_group(
     all_dataframes: List[pd.DataFrame],
     all_page_numbers: List[int],
     header_details_map: Dict[int, Dict[str, Any]],
-    source_name: str,  # Thêm source_name
+    source_name: str,
 ) -> List[ProcessedTableEntry]:
-    """
-    Xử lý một nhóm các bảng được chỉ định để ghép nối.
-    Trả về một danh sách các ProcessedTableEntry.
-    """
     group_results: List[ProcessedTableEntry] = []
+    
+    # 1. Determine group_target_headers (standard header for the group after processing)
+    # Prioritize header from table with is_header_guessed: False in the group
+    final_group_target_headers: Optional[List[str]] = None
+    header_provider_idx = -1
 
-    group_level_header_details: Optional[Dict[str, Any]] = None
     for idx_in_group in group_indices:
-        if idx_in_group in header_details_map:
-            group_level_header_details = header_details_map[idx_in_group]
-            break
+        details = header_details_map.get(idx_in_group)
+        if details and not details.get("is_guessed", True) and isinstance(details.get("headers"), list) :
+            final_group_target_headers = details["headers"]
+            header_provider_idx = idx_in_group
+            break # Found the first "real" header
 
-    if group_level_header_details is None:
-        logging.warning(
-            f"Cảnh báo quan trọng: Không tìm thấy 'headers_info' cho group {group_indices}. Thêm bảng gốc riêng lẻ."
-        )
+    if final_group_target_headers is None and group_indices: # If no "real" header, take from the first table with info
+        first_idx_with_info = -1
+        for idx_in_group in group_indices:
+            if idx_in_group in header_details_map:
+                first_idx_with_info = idx_in_group
+                break
+        if first_idx_with_info != -1:
+            details = header_details_map[first_idx_with_info]
+            if isinstance(details.get("headers"), list):
+                final_group_target_headers = details["headers"]
+                header_provider_idx = first_idx_with_info # Consider this the "provider" for the structure
+        
+    if final_group_target_headers is None:
+        logging.warning(f"Không thể xác định target headers cho group {group_indices} từ headers_info. Thêm bảng gốc.") # Keep original Vietnamese log
         for original_df_idx in group_indices:
-            page_num = (
-                all_page_numbers[original_df_idx]
-                if 0 <= original_df_idx < len(all_page_numbers)
-                else -1
-            )
-            group_results.append(
-                {
-                    "dataframe": all_dataframes[original_df_idx].copy(),
-                    "page_numbers": [page_num] if page_num != -1 else [-1],
-                    "source": source_name,
-                }
-            )
+            page_num = all_page_numbers[original_df_idx] if 0 <= original_df_idx < len(all_page_numbers) else -1
+            group_results.append({
+                "dataframe": all_dataframes[original_df_idx].copy(),
+                "page_numbers": [page_num] if page_num != -1 else [-1],
+                "source": source_name
+            })
         return group_results
 
-    group_target_headers: List[str] = group_level_header_details["headers"]
-    is_group_header_guessed: bool = group_level_header_details["is_guessed"]
-
-    # Lưu trữ (DataFrame đã xử lý, danh sách trang gốc của chính DF đó)
+    # 2. Process each table in the group
     processed_dfs_with_their_pages: List[Tuple[pd.DataFrame, List[int]]] = []
-
     for original_df_idx in group_indices:
         current_df_original = all_dataframes[original_df_idx]
+        df_for_processing = current_df_original.copy()
+
         page_num_list_for_df: List[int] = [-1]
         if 0 <= original_df_idx < len(all_page_numbers):
             page_val = all_page_numbers[original_df_idx]
             page_num_list_for_df = [page_val] if page_val != -1 else [-1]
 
-        processed_df = _apply_headers_to_table(
-            current_df_original,  # _apply_headers_to_table sẽ tự copy
-            group_target_headers,
-            is_group_header_guessed,
+        current_table_header_details = header_details_map.get(original_df_idx)
+
+        if current_table_header_details is None:
+            logging.warning(f"Không có headers_info cho bảng {original_df_idx} trong group. Thử dùng header chung của nhóm (nếu có) và coi như is_guessed=True, hoặc bỏ qua.") # Keep original Vietnamese log
+            # In this case, can assume is_guessed=True and target_headers is final_group_target_headers
+            # Or add original table if don't want to risk
+            # To be safe, if no SPECIFIC header info for this table, add original table
+            # Or apply group header but be very careful about is_guessed
+            # Based on JSON, tables 1-10 have their own info.
+            group_results.append({
+                "dataframe": current_df_original.copy(),
+                "page_numbers": page_num_list_for_df,
+                "source": source_name
+            })
+            continue
+
+
+        # Get SPECIFIC headers and is_guessed for this table
+        individual_target_headers: List[str] = current_table_header_details["headers"]
+        is_individual_header_guessed: bool = current_table_header_details["is_guessed"]
+
+        # Step 1: Apply SPECIFIC header to this table (move header to first row if guessed, or assign if not guessed)
+        # Use _apply_headers_to_table with THIS TABLE'S info
+        processed_df_step1 = _apply_headers_to_table(
+            df_for_processing, # df_for_processing is already a copy
+            individual_target_headers, 
+            is_individual_header_guessed 
         )
 
-        if processed_df is None:
-            logging.warning(
-                f"Bảng tại index {original_df_idx} trong group {group_indices} không thể xử lý header. Thêm bảng gốc."
-            )
-            group_results.append(
-                {  # Thêm trực tiếp vào group_results nếu không xử lý được cho nhóm
-                    "dataframe": current_df_original.copy(),
+        if processed_df_step1 is None: # Error in _apply_headers_to_table (e.g. column count)
+            logging.warning(f"Bảng {original_df_idx} không thể xử lý header theo thông tin riêng. Thêm bảng gốc.") # Keep original Vietnamese log
+            group_results.append({
+                "dataframe": current_df_original.copy(),
+                "page_numbers": page_num_list_for_df,
+                "source": source_name
+            })
+            continue
+        
+        # Step 2: Standardize column names of processed_df_step1 to final_group_target_headers
+        # This is important for pd.concat to work correctly
+        if len(processed_df_step1.columns) == len(final_group_target_headers):
+            try:
+                processed_df_step1.columns = final_group_target_headers
+            except Exception as e_col_rename:
+                logging.error(f"Lỗi khi chuẩn hóa cột cho bảng {original_df_idx} về header nhóm: {e_col_rename}. Thêm bảng đã xử lý bước 1.") # Keep original Vietnamese log
+                # If rename fails, still add df processed in step 1
+                # This might cause errors later in concat if tables don't have same columns.
+                # Need to ensure processed_df_step1 has same number of columns as final_group_target_headers.
+                # _apply_headers_to_table already checked column count with individual_target_headers.
+                # If individual_target_headers differs from final_group_target_headers in count, there will be issues.
+                # Assumption: LLM will provide individual_target_headers with same column count as final_group_target_headers for tables in the same concat group.
+                # Otherwise, logic for determining final_group_target_headers above needs to be more robust.
+                # With your provided JSON, table 0 has 3 columns, tables 1-10 are also considered 3 columns by LLM.
+                group_results.append({
+                    "dataframe": processed_df_step1, 
                     "page_numbers": page_num_list_for_df,
-                    "source": source_name,
-                }
-            )
-        else:
-            processed_dfs_with_their_pages.append(
-                (processed_df, page_num_list_for_df))
+                    "source": source_name
+                })
+                continue
+
+        else: # Column count doesn't match group's standard header after step 1
+            logging.warning(f"Bảng {original_df_idx} sau khi xử lý header riêng có {len(processed_df_step1.columns)} cột, " # Keep original Vietnamese log
+                            f"không khớp với header chuẩn của nhóm ({len(final_group_target_headers)} cột). Thêm bảng đã xử lý bước 1.") # Keep original Vietnamese log
+            group_results.append({
+                "dataframe": processed_df_step1, 
+                "page_numbers": page_num_list_for_df,
+                "source": source_name
+            })
+            continue
+            
+        processed_dfs_with_their_pages.append((processed_df_step1, page_num_list_for_df))
+
 
     if not processed_dfs_with_their_pages:
-        # group_results có thể đã chứa các bảng gốc nếu tất cả lỗi
         if not group_results and group_indices:
-            logging.warning(
-                f"Cảnh báo: Không có DataFrame nào trong group {group_indices} được chuẩn bị để ghép (sau khi xử lý header)."
-            )
-        return group_results
+             logging.warning(f"Cảnh báo: Không có DataFrame nào trong group {group_indices} được chuẩn bị để ghép.") # Keep original Vietnamese log
+        return group_results 
 
     if len(processed_dfs_with_their_pages) == 1:
         df_single, pages_single = processed_dfs_with_their_pages[0]
-        group_results.append(
-            {
-                "dataframe": df_single,
-                "page_numbers": pages_single,
-                "source": source_name,
-            }
-        )
+        group_results.append({"dataframe": df_single, "page_numbers": pages_single, "source": source_name})
     else:
-        dataframes_to_pd_concat = [item[0]
-                                   for item in processed_dfs_with_their_pages]
-        combined_pages_for_group: List[int] = sorted(
-            list(
-                set(
-                    p
-                    for item in processed_dfs_with_their_pages
-                    for p in item[1]
-                    if p != -1
-                )
-            )
-        )
-        if not combined_pages_for_group and any(
-            p == -1
-            for item in processed_dfs_with_their_pages
-            for p_list in item[1]
-            for p in p_list
-        ):
+        dataframes_to_pd_concat = [item[0] for item in processed_dfs_with_their_pages]
+        combined_pages_for_group: List[int] = sorted(list(set(
+            p for item in processed_dfs_with_their_pages for p in item[1] if p != -1
+        )))
+        if not combined_pages_for_group and any(p == -1 for item in processed_dfs_with_their_pages for p_list in item[1] for p in p_list): # Fix 'any' condition
             combined_pages_for_group = [-1]
 
         try:
-            final_df_group = pd.concat(
-                dataframes_to_pd_concat, ignore_index=True)
-            group_results.append(
-                {
-                    "dataframe": final_df_group,
-                    "page_numbers": combined_pages_for_group,
-                    "source": source_name,
-                }
-            )
+            final_df_group = pd.concat(dataframes_to_pd_concat, ignore_index=True)
+            group_results.append({"dataframe": final_df_group, "page_numbers": combined_pages_for_group, "source": source_name})
         except Exception as e:
-            logging.error(
-                f"Lỗi khi ghép DataFrames trong group {group_indices}: {e}. Thêm các DF đã xử lý header riêng lẻ."
-            )
+            logging.error(f"Lỗi khi ghép DataFrames trong group {group_indices}: {e}. Thêm các DF đã xử lý header riêng lẻ.") # Keep original Vietnamese log
             for df_item, pages_item in processed_dfs_with_their_pages:
-                group_results.append(
-                    {
-                        "dataframe": df_item,
-                        "page_numbers": pages_item,
-                        "source": source_name,
-                    }
-                )
-
+                 group_results.append({"dataframe": df_item, "page_numbers": pages_item, "source": source_name})
+                 
     return group_results
 
 
 def main_concatenation_logic(
     extracted_data: ExtractedDataType,
     concat_json: Dict[str, Any],
-    source_name: str,  # Tham số mới
+    source_name: str,  # New parameter
 ) -> List[ProcessedTableEntry]:
     """
-    Ghép nối DataFrames dựa trên nhóm trong concat_json.
-    Header được áp dụng dựa trên 'headers_info'.
-    Trả về danh sách các dictionary, mỗi dictionary chứa 'dataframe',
-    'page_numbers', và 'source'.
+    Concatenate DataFrames based on groups in concat_json.
+    Headers are applied based on 'headers_info'.
+    Returns a list of dictionaries, each containing 'dataframe',
+    'page_numbers', and 'source'.
     """
     final_results: List[ProcessedTableEntry] = []
     processed_indices_from_json: set[int] = set()
@@ -696,7 +731,7 @@ def main_concatenation_logic(
         all_dataframes
     ) != len(all_page_numbers):
         logging.error(
-            "Lỗi: 'extracted_data' không hợp lệ hoặc 'dataframes' và 'page_numbers' không khớp."
+            "Lỗi: 'extracted_data' không hợp lệ hoặc 'dataframes' và 'page_numbers' không khớp." # Keep original Vietnamese log
         )
         return []
 
@@ -707,11 +742,11 @@ def main_concatenation_logic(
         instructions_list = concat_json.get("concatable_tables", [])
         if not isinstance(instructions_list, list):
             logging.warning(
-                "Cảnh báo: 'concatable_tables' trong concat_json không phải list."
+                "Cảnh báo: 'concatable_tables' trong concat_json không phải list." # Keep original Vietnamese log
             )
             instructions_list = []
     elif concat_json is not None:
-        logging.warning("Cảnh báo: 'concat_json' không phải dictionary.")
+        logging.warning("Cảnh báo: 'concat_json' không phải dictionary.") # Keep original Vietnamese log
 
     for group_instruction in instructions_list:
         if not (
@@ -719,7 +754,7 @@ def main_concatenation_logic(
                        dict) and "table_index" in group_instruction
         ):
             logging.warning(
-                f"Cảnh báo: Group instruction không hợp lệ: {group_instruction}. Bỏ qua."
+                f"Cảnh báo: Group instruction không hợp lệ: {group_instruction}. Bỏ qua." # Keep original Vietnamese log
             )
             continue
 
@@ -730,7 +765,7 @@ def main_concatenation_logic(
             and table_indices_from_json_group
         ):
             logging.warning(
-                f"Cảnh báo: 'table_index' trong group không hợp lệ hoặc rỗng: {group_instruction}. Bỏ qua."
+                f"Cảnh báo: 'table_index' trong group không hợp lệ hoặc rỗng: {group_instruction}. Bỏ qua." # Keep original Vietnamese log
             )
             continue
 
@@ -738,19 +773,19 @@ def main_concatenation_logic(
         for index in table_indices_from_json_group:
             if not isinstance(index, int):
                 logging.warning(
-                    f"Cảnh báo: Chỉ mục không phải int '{index}' trong group {table_indices_from_json_group}. Bỏ qua."
+                    f"Cảnh báo: Chỉ mục không phải int '{index}' trong group {table_indices_from_json_group}. Bỏ qua." # Keep original Vietnamese log
                 )
                 continue
             if 0 <= index < len(all_dataframes):
                 valid_indices_in_this_json_group.append(index)
             else:
                 logging.warning(
-                    f"Cảnh báo: Chỉ mục {index} ngoài phạm vi. Bỏ qua trong group {table_indices_from_json_group}."
+                    f"Cảnh báo: Chỉ mục {index} ngoài phạm vi. Bỏ qua trong group {table_indices_from_json_group}." # Keep original Vietnamese log
                 )
 
         if not valid_indices_in_this_json_group:
             logging.warning(
-                f"Cảnh báo: Không có DataFrame hợp lệ để xử lý cho group {table_indices_from_json_group}."
+                f"Cảnh báo: Không có DataFrame hợp lệ để xử lý cho group {table_indices_from_json_group}." # Keep original Vietnamese log
             )
             continue
 
@@ -762,11 +797,11 @@ def main_concatenation_logic(
             all_dataframes,
             all_page_numbers,
             header_details_map,
-            source_name,  # Truyền source_name vào hàm xử lý nhóm
+            source_name,  # Pass source_name to group processing function
         )
         final_results.extend(group_processed_entries)
 
-    # Xử lý các bảng độc lập
+    # Process independent tables
     all_available_indices_set = set(range(len(all_dataframes)))
     independent_table_indices = sorted(
         list(all_available_indices_set - processed_indices_from_json)
@@ -784,7 +819,7 @@ def main_concatenation_logic(
 
         if header_details is None:
             logging.info(
-                f"Thông tin: Không tìm thấy 'headers_info' cho bảng độc lập tại index {idx}. Sử dụng bảng gốc."
+                f"Thông tin: Không tìm thấy 'headers_info' cho bảng độc lập tại index {idx}. Sử dụng bảng gốc." # Keep original Vietnamese log
             )
             final_df_for_independent_table = original_df.copy()
         else:
@@ -793,13 +828,13 @@ def main_concatenation_logic(
 
             processed_df = _apply_headers_to_table(
                 original_df, target_headers, is_guessed
-            )  # original_df sẽ được copy bên trong
+            )  # original_df will be copied inside
 
             if (
                 processed_df is None
-            ):  # Lỗi khi áp dụng header, _apply_headers_to_table trả về None
+            ):  # Error applying header, _apply_headers_to_table returned None
                 logging.warning(
-                    f"Không thể xử lý header cho bảng độc lập {idx}. Sử dụng bảng gốc."
+                    f"Không thể xử lý header cho bảng độc lập {idx}. Sử dụng bảng gốc." # Keep original Vietnamese log
                 )
                 final_df_for_independent_table = original_df.copy()
             else:
@@ -818,39 +853,39 @@ def main_concatenation_logic(
 
 def extract_tables_from_sources(
     sources: List[str],
-) -> List[ProcessedTableEntry]:  # Cập nhật type hint trả về
+) -> List[ProcessedTableEntry]:
     """
-    Trích xuất các bảng đã ghép nối từ danh sách các file PDF.
+    Extract concatenated tables from a list of PDF files.
     """
     converter = PDFConverter()
     conversions = converter.convert(
         sources
-    )  # conversions là Dict[str, Any] (Any là docling_document)
+    )  # conversions is Dict[str, Any] (Any is docling_document)
 
-    # Khởi tạo để tích lũy kết quả
+    # Initialize to accumulate results
     all_final_results: List[ProcessedTableEntry] = []
 
     for source_path, docling_document in conversions.items():
-        # Trích xuất tên file rút gọn từ source_path
-        # Ví dụ: "/path/to/filename.pdf" -> "filename"
+        # Extract short filename from source_path
+        # Example: "/path/to/filename.pdf" -> "filename"
         base_name_with_ext = os.path.basename(source_path)
         source_name_short = os.path.splitext(base_name_with_ext)[0]
 
         logging.info(
-            f"Đang xử lý nguồn: {source_name_short} (từ: {source_path})")
+            f"Đang xử lý nguồn: {source_name_short} (từ: {source_path})") # Keep original Vietnamese log
 
         extracted_data, full_prompt = extract_raw_tables_from_docling(
             docling_document)
 
-        # Giả sử hàm generate của bạn trả về Dict[str, Any]
-        # Bạn cần đảm bảo hàm generate(full_prompt) được định nghĩa và hoạt động
+        # Assume your generate function returns Dict[str, Any]
+        # Ensure generate(full_prompt) is defined and working
         try:
-            concat_json: Dict[str, Any] = generate(full_prompt)  # Gọi API LLM
+            concat_json: Dict[str, Any] = generate(full_prompt)  # Call LLM API
         except Exception as e:
             logging.error(
-                f"Lỗi khi gọi API LLM cho source {source_name_short}: {e}")
-            # Quyết định cách xử lý: bỏ qua source này, hoặc thử lại, hoặc thêm các bảng chưa xử lý
-            # Ví dụ: thêm tất cả các bảng từ extracted_data mà không ghép nối
+                f"Lỗi khi gọi API LLM cho source {source_name_short}: {e}") # Keep original Vietnamese log
+            # Decide how to handle: skip this source, retry, or add unprocessed tables
+            # Example: add all tables from extracted_data without concatenation
             for i, df in enumerate(extracted_data["dataframes"]):
                 page_num = extracted_data["page_numbers"][i]
                 all_final_results.append(
@@ -860,26 +895,26 @@ def extract_tables_from_sources(
                         "source": source_name_short,
                     }
                 )
-            continue  # Chuyển sang source tiếp theo
+            continue  # Move to the next source
 
         results_for_current_source = main_concatenation_logic(
             extracted_data,
             concat_json,
-            source_name_short,  # Truyền tên nguồn đã rút gọn
+            source_name_short,  # Pass the shortened source name
         )
         all_final_results.extend(
-            results_for_current_source)  # Tích lũy kết quả
+            results_for_current_source)  # Accumulate results
 
     return all_final_results
 
 
 def extract_tables_from_docling(
     docling_document: Any,
-) -> List[ProcessedTableEntry]:  # Cập nhật type hint
+) -> List[ProcessedTableEntry]:  # Update type hint
     """
-    Trích xuất bảng từ một đối tượng Docling Document.
+    Extract tables from a Docling Document object.
     """
-    source_name_short = "unknown_source"  # Giá trị mặc định
+    source_name_short = "unknown_source"  # Default value
     if (
         hasattr(docling_document, "origin")
         and docling_document.origin
@@ -889,18 +924,18 @@ def extract_tables_from_docling(
         base_name_with_ext = os.path.basename(docling_document.origin.filename)
         source_name_short = os.path.splitext(base_name_with_ext)[0]
 
-    logging.info(f"Đang xử lý tài liệu Docling: {source_name_short}")
+    logging.info(f"Đang xử lý tài liệu Docling: {source_name_short}") # Keep original Vietnamese log
 
     extracted_data, full_prompt = extract_raw_tables_from_docling(
         docling_document)
 
     try:
-        concat_json: Dict[str, Any] = generate(full_prompt)  # Gọi API LLM
+        concat_json: Dict[str, Any] = generate(full_prompt)  # Call LLM API
     except Exception as e:
         logging.error(
-            f"Lỗi khi gọi API LLM cho docling_document {source_name_short}: {e}"
+            f"Lỗi khi gọi API LLM cho docling_document {source_name_short}: {e}" # Keep original Vietnamese log
         )
-        # Xử lý tương tự như trong extract_tables_from_sources nếu generate lỗi
+        # Handle similarly to extract_tables_from_sources if generate fails
         fallback_results: List[ProcessedTableEntry] = []
         for i, df in enumerate(extracted_data["dataframes"]):
             page_num = extracted_data["page_numbers"][i]
@@ -916,7 +951,7 @@ def extract_tables_from_docling(
     concatenated_results = main_concatenation_logic(
         extracted_data,
         concat_json,
-        source_name_short,  # Truyền tên nguồn đã rút gọn
+        source_name_short,  # Pass the shortened source name
     )
     return concatenated_results
 
@@ -956,6 +991,10 @@ def table_to_markdown(table: pd.DataFrame, name: str, page_numbers: List[int]) -
 
     return markdown_str
 
+def get_pdf_name(source: str) -> str:
+    pdf_name = os.path.basename(source)
+    file_name_part, file_extension_part = os.path.splitext(pdf_name)
+    return file_name_part
 
 def get_table_content(
     processed_tables_with_pages: List[ProcessedTableEntry],
@@ -965,10 +1004,9 @@ def get_table_content(
     sources_ = set(table["source"] for table in processed_tables_with_pages)
 
     for source in sources_:
-        pdf_name = os.path.basename(source)
-        file_name_part, file_extension_part = os.path.splitext(pdf_name)
+        file_name_part = get_pdf_name(source)
 
-        # lấy ra các processed_tables_with_pages_i mà có key 'source' = với file_name_part
+        # Get processed_tables_with_pages_i where 'source' key matches file_name_part
         processed_tables_source = [
             table
             for table in processed_tables_with_pages
