@@ -113,8 +113,12 @@ def preprocess_df(df: pd.DataFrame) -> pd.DataFrame:
         None if str(col).startswith("Col") else col
         for col in df_processed.columns
     ]
-    df_processed = df_processed.replace(['<NA>', "None", "None ", None, ""], pd.NA)
-    df_processed = df_processed.dropna(how='all')
+    try:
+        df_processed = df_processed.replace(['<NA>', "None", "None ", None, ""], pd.NA)
+        df_processed = df_processed.dropna(how='all')
+    except Exception as e:
+        logging.error(f"Error in replacing and dropping NA values: {e}")
+        pass
 
     # Handle case where column names are numbers
     if all(str(col).isdigit() for col in df_processed.columns):
@@ -1019,6 +1023,10 @@ def get_table_content(
 
         for idx, table in enumerate(processed_tables_source):
             table_df = table["dataframe"]
+            # replace NA with empty string
+            table_df = table_df.fillna('')
+            # drop duplicate rows
+            table_df = table_df.drop_duplicates()
             page_numbers = table["page_numbers"]
             table_name = f"{file_name_part}_table_{idx}"
             markdown_str = table_to_markdown(
