@@ -22,39 +22,76 @@ GEMINI_API_KEY = os.getenv("GOOGLE_API_KEY")
 
 
 def generate(prompt):
-    model = "gemini-2.0-flash-lite"
+    model = "gemini-2.0-flash"
     client = genai.Client(
         api_key=GEMINI_API_KEY,
     )
-    system_prompt = """You are an AI assistant specialized in analyzing and grouping data tables for vertical concatenation. I will provide you with information for multiple tables. Each table entry might include:
+    system_prompt = """You are an AI assistant specialized in analyzing and grouping data tables for vertical concatenation. Your primary goal is to identify sets of tables that can be meaningfully combined based on their context, structure, and headers. You will be provided with information for multiple tables, presented sequentially.
 
-Context before table: A line indicating the subject matter preceding the table. This context can provide clues about the table's topic.
-Table index: (e.g., Table 0).
-Sample data: A few lines of data. Values in data lines are separated by the = character. The first line of sample data may or may not be an explicit header row containing column names.
-Number of columns.
-A list of data types for the columns.
+**Input Format:**
 
-The tables will be presented sequentially.
+Each table entry provides several pieces of information:
+1.  `Context before table` (CBT): (Optional) Text preceding the table, often indicating its subject matter, title, or the section it belongs to. This context is **critically important** for grouping.
+2.  `Table index`: A numerical identifier (e.g., Table 0).
+3.  `Explicit header definition line` (EHDL): (Optional) A line formatted as `ColumnName1=ColumnName2=ColumnName3...` that explicitly defines the column names. This line, if present, appears immediately after the `Context before table` (if any) and before any `Sample data` rows. If multiple lines formatted this way appear consecutively in this position (i.e., between CBT and the first actual data row), the **last such line immediately preceding the first data row is considered the EHDL.**
+4.  `Sample data`: One or more lines of table content. Values in data lines are separated by the `=` character.
+5.  `Number of columns` (NOC): The count of columns in the table.
+6.  `Column types`: A list of data types for the columns.
 
-Your tasks are:
+**Your Tasks (leading to a structured JSON output):**
 
-First, for each table, meticulously examine its first line of sample data. Determine if this first line explicitly serves as a header row containing distinct column names, rather than being a row of actual data. Identify the table indexes of only those tables that possess such an explicit, pre-existing header row in their sample data. If a table's first row contains data values, even if structured, it should not be considered as having an explicit pre-existing header in this step. It is possible that no tables, or only some, have explicit pre-existing headers.
+**First: Identify Explicit Headers**
+For each table, determine if it possesses an `Explicit header definition line (EHDL)` as defined in the "Input Format" section.
+* Carefully check the line(s) between the CBT and the `Sample data`.
+* The first actual data row is NOT the EHDL, even if it contains values that might seem like headers, unless it is specifically the EHDL identified as per the rule above.
+* Compile a list of table indexes that have a true EHDL. This information will be used for the `has_headers` field in the output.
 
-Second, identify groups of tables that can be vertically concatenated. Tables are considered concatenable if they share the following characteristics:
+**Second: Identify Concatable Table Groups**
+Your main task is to group tables that can be vertically concatenated. This process must result in every table index being assigned to a group in the `concatable_tables` output, even if a group contains only a single table due to its unique characteristics. Apply the following criteria hierarchically:
 
-Relevant Context: The Context before table information, if provided, suggests the tables belong to the same logical section or topic. Use this context as a strong indicator for grouping.
-Same Number of Columns.
-Compatible Data Types for corresponding columns.
-Consistent Header Structure (either pre-existing or to be inferred): If a table in a potential group has an explicit pre-existing header (as identified in the first task), other tables considered for this group should ideally align with this structure. For tables without explicit pre-existing headers, their structure must be compatible with the anticipated common header structure for the group.
-Third, for every table, you must provide a definitive list of column headers. Also, for each table, you must determine if these provided headers were pre-existing in the sample data or if they were inferred/predicted by you.
-If a table was identified in the first task as having an explicit pre-existing header, you must use those exact pre-existing headers for that table. The determination of whether these headers were guessed or not should reflect this initial finding (i.e., not guessed).
-If a table was not identified in the first task as having an explicit pre-existing header, you are required to infer or predict appropriate column headers for it. When inferring headers for a table that is part of a concatenation group, prioritize using or adapting the explicit pre-existing headers from another table within the same group, if such a table exists. If the table is independent or no table in its group has an explicit pre-existing header, infer the headers based on its data content, data types, and any available context. For any table where headers are inferred or predicted by you, this fact must be indicated.
+1.  **Primary Separator - `Context before table` (CBT):** This is the **most important criterion for separating groups.**
+    * When a table is encountered, compare its CBT (if present) with the CBT of the active or immediately preceding table/group.
+    * A new or significantly different CBT (e.g., a new title, a change from "Anime" to "Animation", or "Film" to "Video games") **must initiate a new table group.** This rule takes precedence over structural similarities. Tables with no CBT are generally considered continuations of the current CBT group, provided other criteria (NOC, Headers) match.
 
-Finally, when constructing the information about headers for all tables, pay attention to consolidation. If multiple table indexes, particularly those grouped together for concatenation as identified in the second task, share the exact same list of column headers and the same status regarding whether those headers were guessed or not, you should consolidate them into a single descriptive entry. This single entry should list all relevant table indexes in its table_index array. For tables that do not fit into such a consolidated group (e.g., independent tables with unique headers, or groups with varying header statuses), create individual descriptive entries as appropriate.
+2.  **Structural Compatibility (within a CBT-defined group):** Once tables are tentatively associated by CBT (or lack of new CBT), they must also be structurally compatible to belong to the same concatenation group:
+    * **Number of Columns (NOC):** All tables within a single concatenation group **must** have the exact same `Number of columns`. A change in NOC, even if the CBT implies continuation, forces a new group.
+    * **Consistent Header Structure:**
+        * **Tables with an EHDL:** Parse the column names from their EHDL. For tables to be in the same group, their parsed column names (and their order) must be **strictly identical after applying any specified column-name-specific normalizations (like the 'Source' rule detailed below).**
+            * A difference in any column name not covered by a specific normalization rule (e.g., "Crew role, notes" vs. "Notes") makes the headers incompatible, forcing a new group.
+            * **Normalization Rule (Specific Cases):** The only current normalization is for 'Source' columns: header names like `Source[13]`, `Source[XYZ]`, `Source[13][35]` etc., should be treated as a canonical "Source" when comparing headers for this specific column name. This rule applies *only* to columns named 'Source' or its direct variants. It does *not* make entire header sets compatible if other column names differ (e.g., `['Year', 'Title', 'Role', 'Crew role, notes', 'Source']` is NOT compatible with `['Year', 'Title', 'Role', 'Notes', 'Source']` because the fourth column names differ, and this difference is not addressed by the 'Source' normalization).
+        * **Tables without an EHDL:** If a table lacks an EHDL but its CBT and NOC align with an active group, it can be part of that group only if its implicit structure is consistent with the group's established headers. It inherits these headers. The group's headers are typically set by the first table with an EHDL in that group, or are consistently inferred if no table in the group has an EHDL (see Task Third).
 
-Group the tables based on these criteria for concatenation.
+**Third: Determine Headers and "Guessed" Status for All Tables**
+For every table, provide its definitive column headers and whether these headers were pre-existing or inferred. This will inform the `headers_info` field in the output.
 
-Below is the table data:"""
+* **Tables with an EHDL:**
+    * `headers`: Use the exact column names parsed from its EHDL (applying the 'Source' normalization only if that column name appears and is part of the EHDL).
+    * `is_header_guessed`: `false`.
+* **Tables without an EHDL:**
+    * `headers`:
+        * If it's part of a group where headers are established by another table's EHDL (typically the first such table in that group), it inherits those (potentially normalized) headers.
+        * If it's part of a group where **no table possesses an EHDL** (e.g., the group starts due to a CBT change and the first table in this new group lacks an EHDL, and subsequent tables also lack EHDLs but match on CBT and NOC), then all tables in this group will use consistently applied generic headers like `["Column 1", "Column 2", ...]` based on the group's NOC.
+        * If it forms a new group by itself (e.g., due to a NOC change not aligning it with any EHDL-defined group, or it's a standalone table with unique CBT and no EHDL), and no EHDL defines headers for this new group, use generic headers as above based on its NOC.
+    * `is_header_guessed`: `true` (because headers are inherited or generic).
+
+**Finally: Consolidate Header Information Output**
+For the `headers_info` part of the JSON output: if multiple table indexes (particularly those within the same `concatable_tables` group) share the exact same list of `headers` AND the same `is_header_guessed` status, consolidate them into a single `headers_info` entry. This entry's `table_index` field will be an array listing all such table indexes. Tables not fitting this consolidation pattern will have their own `headers_info` entries.
+
+**Critical Guidelines for JSON Output Generation:**
+When generating the final JSON output, pay strict attention to the following to ensure its validity:
+* **String Formatting:** All string values (e.g., column names in the `headers` list) must be correctly formatted.
+    * Enclose all strings in double quotes (`"`).
+    * Inside any string value, special characters must be escaped:
+        * A literal double quote (`"`) must be written as `\"`.
+        * A literal backslash (`\\`) must be written as `\\`.
+        * A newline character must be written as `\n`.
+        * A tab character must be written as `\t`.
+        * A carriage return character must be written as `\r`.
+        * A backspace character must be written as `\b`.
+        * A form feed character must be written as `\f`.
+    * Ensure every string opened with a double quote is properly terminated with a closing double quote. Adhering to this will prevent `Unterminated string` errors and ensure the JSON is parsable.
+
+Below is the table data:\n\n"""
     content = system_prompt + prompt
     contents = [
         types.Content(
