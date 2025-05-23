@@ -66,30 +66,24 @@ def get_limited_text_before_table(
     n_tokens: int,
     search_height_multiplier: float = 2.0,
     min_search_height: int = 30,
+    main_content_max_x_ratio: float = 0.65 # Heuristic: nội dung chính thường nằm trong 65% chiều rộng bên trái
 ) -> str:
-    """Lấy văn bản giới hạn trước bảng, tránh vùng chồng lấn với bảng khác"""
+    """Lấy văn bản giới hạn trước bảng, cố gắng tránh các cột không liên quan."""
     if isinstance(current_table_bbox, tuple):
         if len(current_table_bbox) == 4:
             try:
                 current_table_bbox = pymupdf.Rect(current_table_bbox)
-            except Exception:
-                return ""
-        else:
-            return ""
-    elif not isinstance(current_table_bbox, pymupdf.Rect):
-        return ""
+            except Exception: return ""
+        else: return ""
+    elif not isinstance(current_table_bbox, pymupdf.Rect): return ""
 
-    if not current_table_bbox or current_table_bbox.is_empty:
-        return ""
+    if not current_table_bbox or current_table_bbox.is_empty: return ""
 
     page_width = page.rect.width
-
     try:
         table_height = current_table_bbox.height
-        if table_height <= 0:
-            table_height = 10
-    except AttributeError:
-        return ""
+        if table_height <= 0: table_height = 10
+    except AttributeError: return ""
 
     search_area_height = max(table_height * search_height_multiplier, min_search_height)
     search_rect_y0 = max(0, current_table_bbox.y0 - 1)
@@ -99,60 +93,121 @@ def get_limited_text_before_table(
         if current_table_bbox.y0 <= min_search_height / 2:
             search_rect_y0 = max(0, current_table_bbox.y0 - 1)
             search_rect_y1 = max(0, search_rect_y0 - (min_search_height / 2))
-            if search_rect_y1 >= search_rect_y0:
-                return ""
+            if search_rect_y1 >= search_rect_y0: return ""
         else:
             search_rect_y1 = max(0, current_table_bbox.y0 - min_search_height)
             search_rect_y0 = max(0, current_table_bbox.y0 - 1)
-            if search_rect_y1 >= search_rect_y0:
-                return ""
+            if search_rect_y1 >= search_rect_y0: return ""
 
     search_rect = pymupdf.Rect(0, search_rect_y1, page_width, search_rect_y0)
-    if search_rect.is_empty or search_rect.height <= 0:
-        return ""
+    if search_rect.is_empty or search_rect.height <= 0: return ""
 
     blocks_in_search_area = page.get_text("blocks", clip=search_rect, sort=True)
-
     filtered_text_lines = []
+
     for block_data in blocks_in_search_area:
         if block_data[6] != 0:  # Not a text block
             continue
 
-        block_rect = pymupdf.Rect(
-            block_data[0], block_data[1], block_data[2], block_data[3]
-        )
+        block_rect = pymupdf.Rect(block_data[0], block_data[1], block_data[2], block_data[3])
         block_text_content = block_data[4]
 
         is_part_of_a_table = False
-        for table_bbox_on_page in all_table_bboxes_on_page:
-            if isinstance(table_bbox_on_page, tuple):
-                test_table_rect = pymupdf.Rect(table_bbox_on_page)
-            else:
-                test_table_rect = table_bbox_on_page
-
+        for table_bbox_on_pg in all_table_bboxes_on_page:
+            test_table_rect = pymupdf.Rect(table_bbox_on_pg) if isinstance(table_bbox_on_pg, tuple) else table_bbox_on_pg
             if not test_table_rect.is_empty:
-                intersection = block_rect.irect & test_table_rect.irect
-                if not intersection.is_empty:
+                if not (block_rect.irect & test_table_rect.irect).is_empty:
                     is_part_of_a_table = True
                     break
+        if is_part_of_a_table: continue
 
-        if not is_part_of_a_table:
+        # --- LOGIC LỌC CỘT MỚI ---
+        is_horizontally_relevant = False
+        # Điều kiện 1: Khối văn bản phải có sự chồng lấn theo chiều ngang với bảng, 
+        # hoặc nằm ngay sát bên trái và có khả năng là tiêu đề rộng hơn.
+        # (block_rect.x1 > current_table_bbox.x0) và (block_rect.x0 < current_table_bbox.x1) đảm bảo có overlap
+        # Mở rộng vùng kiểm tra một chút để chấp nhận tiêu đề rộng hơn bảng
+        effective_table_x0 = current_table_bbox.x0 - (current_table_bbox.width * 0.1) # Cho phép tiêu đề lệch trái chút
+        effective_table_x1 = current_table_bbox.x1 + (current_table_bbox.width * 0.1) # Cho phép tiêu đề lệch phải chút
+
+        if max(block_rect.x0, effective_table_x0) < min(block_rect.x1, effective_table_x1):
+            is_horizontally_relevant = True
+        
+        # Điều kiện 2: Nếu bảng nằm ở phần nội dung chính (ví dụ: nửa trái trang),
+        # thì ngữ cảnh cũng phải nằm ở đó, không lấy từ cột phụ bên phải.
+        # Ví dụ: nếu bảng kết thúc trước 65% chiều rộng trang, thì ngữ cảnh không nên bắt đầu sau 60% chiều rộng trang.
+        if is_horizontally_relevant and \
+           current_table_bbox.x1 < page_width * main_content_max_x_ratio: # Bảng nằm trong vùng nội dung chính
+            if block_rect.x0 >= page_width * (main_content_max_x_ratio - 0.05): # Khối văn bản bắt đầu ở vùng cột phụ
+                is_horizontally_relevant = False
+        # --- KẾT THÚC LOGIC LỌC CỘT MỚI ---
+
+        if is_horizontally_relevant:
             cleaned_block_text = block_text_content.replace("\n", " ").strip()
             if cleaned_block_text:
                 filtered_text_lines.append(cleaned_block_text)
 
     text_above = " ".join(filtered_text_lines)
-    text_above = " ".join(text_above.split())  # Normalize whitespace
+    text_above = " ".join(text_above.split())
 
-    if not text_above:
-        return ""
-
+    if not text_above: return ""
     tokens = text_above.split()
-    if len(tokens) > n_tokens:
-        limited_text = " ".join(tokens[-n_tokens:])
-    else:
-        limited_text = " ".join(tokens)
+    if len(tokens) > n_tokens: limited_text = " ".join(tokens[-n_tokens:])
+    else: limited_text = " ".join(tokens)
+    return limited_text
 
+
+def get_limited_text_from_bottom_of_page(
+    page: pymupdf.Page,
+    all_table_bboxes_on_page: List[pymupdf.Rect],
+    n_tokens: int,
+    search_height_ratio: float = 0.25,
+    min_search_height_from_bottom: int = 50,
+    main_content_max_x_ratio: float = 0.65 # Heuristic: nội dung chính thường nằm trong 65% chiều rộng bên trái
+) -> str:
+    """Lấy văn bản giới hạn từ cuối trang, cố gắng tránh các cột không liên quan."""
+    if n_tokens <= 0: return ""
+    page_height = page.rect.height
+    page_width = page.rect.width
+    search_area_actual_height = max(page_height * search_height_ratio, min_search_height_from_bottom)
+    search_rect_y1_for_bottom_area = max(0, page_height - search_area_actual_height)
+    search_rect_y0_for_bottom_area = page_height
+    if search_rect_y1_for_bottom_area >= search_rect_y0_for_bottom_area: return ""
+
+    search_rect = pymupdf.Rect(0, search_rect_y1_for_bottom_area, page_width, search_rect_y0_for_bottom_area)
+    if search_rect.is_empty or search_rect.height <= 0: return ""
+
+    blocks_in_search_area = page.get_text("blocks", clip=search_rect, sort=True)
+    filtered_text_lines = []
+
+    for block_data in blocks_in_search_area:
+        if block_data[6] != 0: continue
+        block_rect = pymupdf.Rect(block_data[0], block_data[1], block_data[2], block_data[3])
+        block_text_content = block_data[4]
+        is_part_of_a_table = False
+        for table_bbox_on_this_page in all_table_bboxes_on_page:
+            test_table_rect = pymupdf.Rect(table_bbox_on_this_page) if isinstance(table_bbox_on_this_page, tuple) else table_bbox_on_this_page
+            if not test_table_rect.is_empty:
+                if not (block_rect.irect & test_table_rect.irect).is_empty:
+                    is_part_of_a_table = True
+                    break
+        if is_part_of_a_table: continue
+
+        # --- LOGIC LỌC CỘT MỚI ---
+        # Giả định rằng ngữ cảnh quan trọng ở cuối trang (như tiêu đề cho trang sau)
+        # thường nằm trong luồng nội dung chính, không phải ở cột phụ bên phải.
+        if block_rect.x0 < page_width * main_content_max_x_ratio:
+            cleaned_block_text = block_text_content.replace("\n", " ").strip()
+            if cleaned_block_text:
+                filtered_text_lines.append(cleaned_block_text)
+        # --- KẾT THÚC LOGIC LỌC CỘT MỚI ---
+            
+    text_from_bottom = " ".join(filtered_text_lines)
+    text_from_bottom = " ".join(text_from_bottom.split())
+    if not text_from_bottom: return ""
+    tokens = text_from_bottom.split()
+    if len(tokens) > n_tokens: limited_text = " ".join(tokens[-n_tokens:])
+    else: limited_text = " ".join(tokens)
     return limited_text
 
 
@@ -162,12 +217,11 @@ def extract_tables_and_contexts(
     page_numbers_to_process: Union[int, List[int], str] = "all",
     search_height_multiplier: float = 2.5,
     min_search_height: int = 40,
+    look_to_prev_page_threshold_y0: float = 50.0,
 ) -> Tuple[ExtractedDataType, List[str]]:
-    """Trích xuất bảng và ngữ cảnh từ tài liệu PDF"""
     all_dataframes: List[pd.DataFrame] = []
     all_contexts: List[str] = []
     all_df_page_numbers: List[int] = []
-
     default_extracted_data: ExtractedDataType = {"dataframes": [], "page_numbers": []}
 
     if not isinstance(doc, pymupdf.Document):
@@ -186,24 +240,23 @@ def extract_tables_and_contexts(
         pages_to_process_indices = list(range(len(doc)))
     else:
         logging.error(
-            "Lỗi: page_numbers_to_process phải là số nguyên hoặc danh sách số nguyên (bắt đầu từ 1)."
+            "Lỗi: page_numbers_to_process phải là số nguyên hoặc danh sách số nguyên."
         )
         return default_extracted_data, []
 
     for page_index in pages_to_process_indices:
         if not (0 <= page_index < len(doc)):
             logging.warning(
-                f"Cảnh báo: Số trang {page_index + 1} (index {page_index}) không hợp lệ. Bỏ qua."
+                f"Cảnh báo: Số trang {page_index + 1} không hợp lệ. Bỏ qua."
             )
             continue
 
         page = doc[page_index]
         current_page_human_readable = page.number + 1
-
         page_table_finder = page.find_tables()
-        all_found_table_bboxes_on_page: List[pymupdf.Rect] = []
+        all_found_table_bboxes_on_current_page: List[pymupdf.Rect] = []
         if page_table_finder.tables:
-            all_found_table_bboxes_on_page = [
+            all_found_table_bboxes_on_current_page = [
                 pymupdf.Rect(tbl.bbox) for tbl in page_table_finder.tables if tbl.bbox
             ]
 
@@ -217,31 +270,54 @@ def extract_tables_and_contexts(
 
                 if not df_original.empty:
                     current_table_actual_bbox = pymupdf.Rect(table_obj.bbox)
-
-                    context_text = get_limited_text_before_table(
+                    context_text_current_page = get_limited_text_before_table(
                         page,
                         current_table_actual_bbox,
-                        all_found_table_bboxes_on_page,
+                        all_found_table_bboxes_on_current_page,
                         n_tokens_context,
                         search_height_multiplier=search_height_multiplier,
                         min_search_height=min_search_height,
-                    )
-                    all_contexts.append(context_text)
+                        # main_content_max_x_ratio có thể được truyền ở đây nếu muốn tùy chỉnh
+                    ).strip()
+                    combined_context = context_text_current_page
+                    if (
+                        not context_text_current_page
+                        and current_table_actual_bbox.y0
+                        < look_to_prev_page_threshold_y0
+                        and page_index > 0
+                    ):
+                        prev_page_index = page_index - 1
+                        prev_page = doc[prev_page_index]
+                        prev_page_table_finder = prev_page.find_tables()
+                        all_found_table_bboxes_on_prev_page: List[pymupdf.Rect] = []
+                        if prev_page_table_finder.tables:
+                            all_found_table_bboxes_on_prev_page = [
+                                pymupdf.Rect(tbl.bbox)
+                                for tbl in prev_page_table_finder.tables
+                                if tbl.bbox
+                            ]
+                        context_from_prev_page_bottom = (
+                            get_limited_text_from_bottom_of_page(
+                                prev_page,
+                                all_found_table_bboxes_on_prev_page,
+                                n_tokens_context,
+                                # main_content_max_x_ratio có thể được truyền ở đây
+                            ).strip()
+                        )
+                        if context_from_prev_page_bottom:
+                            combined_context = context_from_prev_page_bottom
+                    all_contexts.append(combined_context)
                     all_dataframes.append(df_original)
                     all_df_page_numbers.append(current_page_human_readable)
-
     extracted_data_output: ExtractedDataType = {
         "dataframes": all_dataframes,
         "page_numbers": all_df_page_numbers,
     }
-
     if not (len(all_dataframes) == len(all_contexts) == len(all_df_page_numbers)):
         logging.error(
             f"Cảnh báo logic nghiêm trọng: Độ dài các list không khớp! DFs: {len(all_dataframes)}, Contexts: {len(all_contexts)}, PageNums: {len(all_df_page_numbers)}"
         )
-        # Return default if mismatch to prevent further errors
         return default_extracted_data, []
-
     return extracted_data_output, all_contexts
 
 
@@ -563,7 +639,7 @@ def process_pdf_file_from_extracted_data(
 def process_pdf_file(
     file_paths: Union[str, List[str]],
     return_type: Literal["dataframe", "markdown"] = "dataframe",
-    verbose: bool = False,
+    verbose: Literal[0, 1, 2] = 0,
 ) -> List[ProcessedTableEntry]:
     final_processed_tables_result: List[ProcessedTableEntry] = []
     final_concat_json_list: list = []  # Đổi tên để tránh nhầm lẫn với biến concat_json cục bộ
@@ -575,7 +651,7 @@ def process_pdf_file(
 
     start_time = time.time()
     for file_path in file_paths:
-        if verbose:
+        if verbose >= 1:
             print(f"Processing file: {get_pdf_name(file_path)}...")
 
         # get_table_content_from_file giờ trả về cả extracted_data và contexts
@@ -583,11 +659,11 @@ def process_pdf_file(
 
         # Xây dựng prompt và gọi LLM
         llm_prompt = build_llm_prompt(extracted_data, contexts)
+        if verbose >= 2:
+            print(f"LLM prompt: {llm_prompt}")
         concat_json = generate(llm_prompt)  # Đây là dict
-
-        logging.info(
-            f"Model: {concat_json.get('model', 'N/A')}, Input tokens: {concat_json.get('input_tokens', 0)}, Output tokens: {concat_json.get('output_tokens', 0)}"
-        )
+        if verbose >= 2:
+            print(f"Concat JSON: {concat_json}")
 
         # Gọi main_concatenation_logic với contexts
         processed_tables_result_single_file = main_concatenation_logic(
@@ -601,12 +677,12 @@ def process_pdf_file(
         final_input_tokens.append(concat_json.get("input_tokens", 0))
         final_output_tokens.append(concat_json.get("output_tokens", 0))
 
-        if verbose:
+        if verbose >= 1:
             print(
                 f"File: {get_pdf_name(file_path)}, Input tokens: {concat_json.get('input_tokens', 0)}, Output tokens: {concat_json.get('output_tokens', 0)}"
             )
 
-    if verbose and final_concat_json_list:  # Kiểm tra final_concat_json_list không rỗng
+    if verbose >= 1 and final_concat_json_list:  # Kiểm tra final_concat_json_list không rỗng
         print(
             f"Model: {final_concat_json_list[0].get('model', 'N/A')}, Total input tokens: {sum(final_input_tokens)}, Total output tokens: {sum(final_output_tokens)}"
         )
