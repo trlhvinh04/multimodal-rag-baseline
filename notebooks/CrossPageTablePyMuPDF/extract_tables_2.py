@@ -15,7 +15,7 @@ from typing import (
 import numpy as np
 import pandas as pd
 import pymupdf
-from check_using_api_2 import generate
+from notebooks.CrossPageTablePyMuPDF.check_using_api import generate
 
 pd.set_option("future.no_silent_downcasting", True)
 
@@ -597,12 +597,29 @@ def main_concatenation_logic(
 
     return processed_tables_result
 
+## ---------------------- FOR TESTING ----------------------
 def get_table_content_from_file(file_path: str) -> Tuple[ExtractedDataType, List[str]]:
     doc = pymupdf.open(file_path)
     extracted_data, contexts = extract_tables_and_contexts(doc)
 
     return extracted_data, contexts
 
+
+def process_pdf_file_from_extracted_data(
+    extracted_data: ExtractedDataType,
+    contexts: List[str],
+    return_type: Literal["dataframe", "markdown"] = "dataframe",
+    verbose: bool = False,
+    source_name: str = "testing",
+) -> List[ProcessedTableEntry]:
+    concat_json = generate(build_llm_prompt(extracted_data, contexts))
+    processed_tables_result = main_concatenation_logic(
+        extracted_data, concat_json, source_name
+    )
+    return processed_tables_result
+
+
+## ---------------------- FULL PROCESSING FUNCTION ----------------------
 def process_pdf_file(
     file_paths: Union[str, List[str]],
     return_type: Literal["dataframe", "markdown"] = "dataframe",
