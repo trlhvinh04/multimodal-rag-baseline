@@ -253,7 +253,7 @@ def extract_tables_and_contexts(
 
         page = doc[page_index]
         current_page_human_readable = page.number + 1
-        page_table_finder = page.find_tables()
+        page_table_finder = page.find_tables(strategy="lines_strict")
         all_found_table_bboxes_on_current_page: List[pymupdf.Rect] = []
         if page_table_finder.tables:
             all_found_table_bboxes_on_current_page = [
