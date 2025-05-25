@@ -16,6 +16,7 @@ from langchain.text_splitter import CharacterTextSplitter
 from dotenv import load_dotenv,find_dotenv
 import pytesseract
 from datasets import load_dataset
+<<<<<<< HEAD
 pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 
 
@@ -31,3 +32,15 @@ from pydantic import BaseModel, Field
 from typing import List, Optional
 from google.oauth2 import service_account
 import re
+=======
+
+import pandas as pd
+import qdrant_client
+from qdrant_client.models import VectorParams, Distance
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain.docstore.document import Document as LangchainDocument
+import tqdm.notebook as tqdm
+from dotenv import load_dotenv
+from datasets import load_dataset
+pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+>>>>>>> main

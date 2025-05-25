@@ -1,208 +1,334 @@
 import logging
 import os
 import time
-from typing import Any, Dict, List, Optional, Sequence, Tuple, TypedDict, Union, cast
+from typing import (
+    Any,
+    Dict,
+    List,
+    Literal,
+    Set,
+    Tuple,
+    TypedDict,
+    Union,
+)
 
 import numpy as np
 import pandas as pd
+import pymupdf
 from check_using_api import generate
-from docling.datamodel.base_models import InputFormat
-from docling.datamodel.pipeline_options import PdfPipelineOptions, TableFormerMode
-from docling.document_converter import DocumentConverter, PdfFormatOption
-from docling_core.types.doc.document import TableItem, TextItem
-from docling_core.types.doc.labels import DocItemLabel
+
+pd.set_option("future.no_silent_downcasting", True)
 
 
 class ExtractedDataType(TypedDict):
+    """Kiểu dữ liệu cho dữ liệu được trích xuất từ PDF"""
+
     dataframes: List[pd.DataFrame]
     page_numbers: List[int]
 
 
-class ProcessedTableEntry(TypedDict):
-    dataframe: pd.DataFrame
-    page_numbers: List[int]
-    source: str
+def get_pdf_name(source: str) -> str:
+    """Lấy tên file PDF không có phần mở rộng"""
+    pdf_name = os.path.basename(source)
+    file_name_part, file_extension_part = os.path.splitext(pdf_name)
+    return file_name_part
 
 
-class PDFConverter:
-    def __init__(
-        self,
-        do_table_structure: bool = True,
-        do_ocr: bool = False,
-        do_cell_matching: bool = False,
-        mode: TableFormerMode = TableFormerMode.ACCURATE,
-        generate_page_images: bool = False,
-        generate_picture_images: bool = False,
-        images_scale: float = 1.0,
-        # ocr_options=EasyOcrOptions(force_full_page_ocr=True, lang=["en"]),  # Use EasyOCR for OCR
-        # ocr_options=TesseractOcrOptions(force_full_page_ocr=True, lang=["eng"]),  # Uncomment to use Tesseract for OCR
-        # ocr_options = OcrMacOptions(force_full_page_ocr=True, lang=['en-US']),
-    ):
-        pipeline_options = PdfPipelineOptions(
-            do_table_structure=do_table_structure,  # Enable table structure detection
-            do_ocr=do_ocr,  # Enable OCR
-            # full page ocr and language selection
-            # ocr_options=EasyOcrOptions(force_full_page_ocr=True, lang=["en"]),  # Use EasyOCR for OCR
-            # ocr_options=TesseractOcrOptions(force_full_page_ocr=True, lang=["eng"]),  # Uncomment to use Tesseract for OCR
-            # ocr_options = OcrMacOptions(force_full_page_ocr=True, lang=['en-US']),
-            table_structure_options=dict(
-                # Use text cells predicted from table structure model
-                do_cell_matching=do_cell_matching,
-                mode=mode,  # Use more accurate Tableformer model
-            ),
-            generate_page_images=generate_page_images,  # Enable page image generation
-            # Enable picture image generation
-            generate_picture_images=generate_picture_images,
-            # Set image resolution scale (scale=1 corresponds to a standard 72 DPI image)
-            images_scale=images_scale,
-        )
-        format_options: Dict[InputFormat, PdfFormatOption] = {
-            InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options)
-        }
-        self.converter = DocumentConverter(format_options=format_options)
-
-    def convert(self, sources: Union[str, Sequence[str]]) -> Dict[str, Any]:
-        """
-        Convert PDF files to Docling Document objects.
-
-        Args:
-            sources: A single PDF file path or a list of PDF file paths.
-
-        Returns:
-            A dictionary mapping source file paths to their corresponding Docling Document objects.
-        """
-        if isinstance(sources, str):
-            sources = [sources]
-        start_time = time.time()
-        # Assuming self.converter.convert(source).document returns a Document object
-        conversions: Dict[str, Any] = {
-            source: self.converter.convert(source).document for source in sources
-        }
-        end_time = time.time()
-        logging.info(f"Time taken: {end_time - start_time:.4f}")
-        return conversions
-
-
-def preprocess_df(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Preprocess DataFrame to handle common header issues:
-    - If column names are numbers, use first row as header
-    - If first data row is numbers (0-based or 1-based), remove it
-
-    Args:
-        df: A pandas DataFrame to preprocess.
-
-    Returns:
-        A preprocessed pandas DataFrame.
-    """
+def preprocess_df(df):
+    """Tiền xử lý DataFrame: xóa cột rỗng, hàng rỗng và chuẩn hóa tên cột"""
     if df.empty:
         return df
 
     df_processed = df.copy()
+    col_names_with_prefix = [
+        col for col in df_processed.columns if str(col).startswith("Col")
+    ]
+    for col in col_names_with_prefix:
+        if df_processed[col].isnull().all():
+            df_processed.drop(col, axis=1, inplace=True)
 
-    # Handle case where column names are numbers
-    if all(str(col).isdigit() for col in df_processed.columns):
-        if not df_processed.empty and df_processed.shape[0] > 0:
-            new_cols = df_processed.iloc[0].astype(str).values
-            df_processed = df_processed.iloc[1:].reset_index(drop=True)
-            df_processed.columns = new_cols
+    df_processed = df_processed.replace([None, ""], np.nan)
+    df_processed = df_processed.dropna(how="all")
+    df_processed = df_processed.fillna("")
 
-    # Handle case where first data row is a sequence of numbers
-    elif not df_processed.empty and df_processed.shape[0] > 0:
-        first_row_values = df_processed.iloc[0]
-        try:
-            numeric_first_row = pd.to_numeric(first_row_values)
-            is_0_based_sequence = all(
-                numeric_first_row.iloc[i] == i for i in range(len(numeric_first_row))
-            )
-            is_1_based_sequence = all(
-                numeric_first_row.iloc[i] == i + 1
-                for i in range(len(numeric_first_row))
-            )
-
-            if is_0_based_sequence or is_1_based_sequence:
-                df_processed = df_processed.iloc[1:].reset_index(drop=True)
-        except (ValueError, TypeError):
-            pass
+    df_processed_columns = df_processed.columns
+    for col in df_processed_columns:
+        if str(col).startswith("Col"):
+            df_processed.rename(columns={col: ""}, inplace=True)
 
     return df_processed
 
 
-def solve_non_header_table(df: pd.DataFrame, target_headers: List[str]) -> pd.DataFrame:
-    """
-    Convert headerless DataFrame by moving current column names to first data row,
-    then assign target_headers
+def get_limited_text_before_table(
+    page: pymupdf.Page,
+    current_table_bbox: pymupdf.Rect,
+    all_table_bboxes_on_page: List[pymupdf.Rect],
+    n_tokens: int,
+    search_height_multiplier: float = 2.0,
+    min_search_height: int = 30,
+    main_content_max_x_ratio: float = 0.65 # Heuristic: nội dung chính thường nằm trong 65% chiều rộng bên trái
+) -> str:
+    """Lấy văn bản giới hạn trước bảng, cố gắng tránh các cột không liên quan."""
+    if isinstance(current_table_bbox, tuple):
+        if len(current_table_bbox) == 4:
+            try:
+                current_table_bbox = pymupdf.Rect(current_table_bbox)
+            except Exception: return ""
+        else: return ""
+    elif not isinstance(current_table_bbox, pymupdf.Rect): return ""
 
-    Args:
-        df: A pandas DataFrame to preprocess.
-        target_headers: A list of target headers to assign to the DataFrame.
+    if not current_table_bbox or current_table_bbox.is_empty: return ""
 
-    Returns:
-        A preprocessed pandas DataFrame.
-    """
-    if not isinstance(target_headers, list):
-        logging.warning(
-            "Warning: target_headers is not a list. Returning original DataFrame."
-        )
-        return df.copy()
-
-    df_copy = df.copy()
-
-    first_row_data_values: List[Any] = []
-    for col_original_name in df_copy.columns:
-        if isinstance(col_original_name, str) and col_original_name.startswith(
-            "Unnamed:"
-        ):
-            first_row_data_values.append(np.nan)
-        else:
-            first_row_data_values.append(str(col_original_name))
-
-    if len(first_row_data_values) != len(target_headers):
-        if len(first_row_data_values) > len(target_headers):
-            first_row_data_values = first_row_data_values[: len(
-                target_headers)]
-        else:
-            first_row_data_values.extend(
-                [np.nan] * (len(target_headers) - len(first_row_data_values))
-            )
-
-    new_first_row_df = pd.DataFrame(
-        [first_row_data_values], columns=target_headers)
-
+    page_width = page.rect.width
     try:
-        df_copy.columns = target_headers
-    except ValueError as e:
-        logging.error(
-            f"Critical error: Cannot assign target_headers. "
-            f"DataFrame columns ({len(df_copy.columns)}) don't match target_headers length ({len(target_headers)}). Error: {e}"
+        table_height = current_table_bbox.height
+        if table_height <= 0: table_height = 10
+    except AttributeError: return ""
+
+    search_area_height = max(table_height * search_height_multiplier, min_search_height)
+    search_rect_y0 = max(0, current_table_bbox.y0 - 1)
+    search_rect_y1 = max(0, search_rect_y0 - search_area_height)
+
+    if search_rect_y1 >= search_rect_y0:
+        if current_table_bbox.y0 <= min_search_height / 2:
+            search_rect_y0 = max(0, current_table_bbox.y0 - 1)
+            search_rect_y1 = max(0, search_rect_y0 - (min_search_height / 2))
+            if search_rect_y1 >= search_rect_y0: return ""
+        else:
+            search_rect_y1 = max(0, current_table_bbox.y0 - min_search_height)
+            search_rect_y0 = max(0, current_table_bbox.y0 - 1)
+            if search_rect_y1 >= search_rect_y0: return ""
+
+    search_rect = pymupdf.Rect(0, search_rect_y1, page_width, search_rect_y0)
+    if search_rect.is_empty or search_rect.height <= 0: return ""
+
+    blocks_in_search_area = page.get_text("blocks", clip=search_rect, sort=True)
+    filtered_text_lines = []
+
+    for block_data in blocks_in_search_area:
+        if block_data[6] != 0:  # Not a text block
+            continue
+
+        block_rect = pymupdf.Rect(block_data[0], block_data[1], block_data[2], block_data[3])
+        block_text_content = block_data[4]
+
+        is_part_of_a_table = False
+        for table_bbox_on_pg in all_table_bboxes_on_page:
+            test_table_rect = pymupdf.Rect(table_bbox_on_pg) if isinstance(table_bbox_on_pg, tuple) else table_bbox_on_pg
+            if not test_table_rect.is_empty:
+                if not (block_rect.irect & test_table_rect.irect).is_empty:
+                    is_part_of_a_table = True
+                    break
+        if is_part_of_a_table: continue
+
+        # --- LOGIC LỌC CỘT MỚI ---
+        is_horizontally_relevant = False
+        # Điều kiện 1: Khối văn bản phải có sự chồng lấn theo chiều ngang với bảng, 
+        # hoặc nằm ngay sát bên trái và có khả năng là tiêu đề rộng hơn.
+        # (block_rect.x1 > current_table_bbox.x0) và (block_rect.x0 < current_table_bbox.x1) đảm bảo có overlap
+        # Mở rộng vùng kiểm tra một chút để chấp nhận tiêu đề rộng hơn bảng
+        effective_table_x0 = current_table_bbox.x0 - (current_table_bbox.width * 0.1) # Cho phép tiêu đề lệch trái chút
+        effective_table_x1 = current_table_bbox.x1 + (current_table_bbox.width * 0.1) # Cho phép tiêu đề lệch phải chút
+
+        if max(block_rect.x0, effective_table_x0) < min(block_rect.x1, effective_table_x1):
+            is_horizontally_relevant = True
+        
+        # Điều kiện 2: Nếu bảng nằm ở phần nội dung chính (ví dụ: nửa trái trang),
+        # thì ngữ cảnh cũng phải nằm ở đó, không lấy từ cột phụ bên phải.
+        # Ví dụ: nếu bảng kết thúc trước 65% chiều rộng trang, thì ngữ cảnh không nên bắt đầu sau 60% chiều rộng trang.
+        if is_horizontally_relevant and \
+           current_table_bbox.x1 < page_width * main_content_max_x_ratio: # Bảng nằm trong vùng nội dung chính
+            if block_rect.x0 >= page_width * (main_content_max_x_ratio - 0.05): # Khối văn bản bắt đầu ở vùng cột phụ
+                is_horizontally_relevant = False
+        # --- KẾT THÚC LOGIC LỌC CỘT MỚI ---
+
+        if is_horizontally_relevant:
+            cleaned_block_text = block_text_content.replace("\n", " ").strip()
+            if cleaned_block_text:
+                filtered_text_lines.append(cleaned_block_text)
+
+    text_above = " ".join(filtered_text_lines)
+    text_above = " ".join(text_above.split())
+
+    if not text_above: return ""
+    tokens = text_above.split()
+    if len(tokens) > n_tokens: limited_text = " ".join(tokens[-n_tokens:])
+    else: limited_text = " ".join(tokens)
+    return limited_text
+
+
+def get_limited_text_from_bottom_of_page(
+    page: pymupdf.Page,
+    all_table_bboxes_on_page: List[pymupdf.Rect],
+    n_tokens: int,
+    search_height_ratio: float = 0.25,
+    min_search_height_from_bottom: int = 50,
+    main_content_max_x_ratio: float = 0.65 # Heuristic: nội dung chính thường nằm trong 65% chiều rộng bên trái
+) -> str:
+    """Lấy văn bản giới hạn từ cuối trang, cố gắng tránh các cột không liên quan."""
+    if n_tokens <= 0: return ""
+    page_height = page.rect.height
+    page_width = page.rect.width
+    search_area_actual_height = max(page_height * search_height_ratio, min_search_height_from_bottom)
+    search_rect_y1_for_bottom_area = max(0, page_height - search_area_actual_height)
+    search_rect_y0_for_bottom_area = page_height
+    if search_rect_y1_for_bottom_area >= search_rect_y0_for_bottom_area: return ""
+
+    search_rect = pymupdf.Rect(0, search_rect_y1_for_bottom_area, page_width, search_rect_y0_for_bottom_area)
+    if search_rect.is_empty or search_rect.height <= 0: return ""
+
+    blocks_in_search_area = page.get_text("blocks", clip=search_rect, sort=True)
+    filtered_text_lines = []
+
+    for block_data in blocks_in_search_area:
+        if block_data[6] != 0: continue
+        block_rect = pymupdf.Rect(block_data[0], block_data[1], block_data[2], block_data[3])
+        block_text_content = block_data[4]
+        is_part_of_a_table = False
+        for table_bbox_on_this_page in all_table_bboxes_on_page:
+            test_table_rect = pymupdf.Rect(table_bbox_on_this_page) if isinstance(table_bbox_on_this_page, tuple) else table_bbox_on_this_page
+            if not test_table_rect.is_empty:
+                if not (block_rect.irect & test_table_rect.irect).is_empty:
+                    is_part_of_a_table = True
+                    break
+        if is_part_of_a_table: continue
+
+        # --- LOGIC LỌC CỘT MỚI ---
+        # Giả định rằng ngữ cảnh quan trọng ở cuối trang (như tiêu đề cho trang sau)
+        # thường nằm trong luồng nội dung chính, không phải ở cột phụ bên phải.
+        if block_rect.x0 < page_width * main_content_max_x_ratio:
+            cleaned_block_text = block_text_content.replace("\n", " ").strip()
+            if cleaned_block_text:
+                filtered_text_lines.append(cleaned_block_text)
+        # --- KẾT THÚC LOGIC LỌC CỘT MỚI ---
+            
+    text_from_bottom = " ".join(filtered_text_lines)
+    text_from_bottom = " ".join(text_from_bottom.split())
+    if not text_from_bottom: return ""
+    tokens = text_from_bottom.split()
+    if len(tokens) > n_tokens: limited_text = " ".join(tokens[-n_tokens:])
+    else: limited_text = " ".join(tokens)
+    return limited_text
+
+
+def extract_tables_and_contexts(
+    doc: pymupdf.Document,
+    n_tokens_context: int = 15,
+    page_numbers_to_process: Union[int, List[int], str] = "all",
+    search_height_multiplier: float = 2.5,
+    min_search_height: int = 40,
+    look_to_prev_page_threshold_y0: float = 50.0,
+) -> Tuple[ExtractedDataType, List[str]]:
+    all_dataframes: List[pd.DataFrame] = []
+    all_contexts: List[str] = []
+    all_df_page_numbers: List[int] = []
+    default_extracted_data: ExtractedDataType = {"dataframes": [], "page_numbers": []}
+
+    if not isinstance(doc, pymupdf.Document):
+        logging.error("Lỗi: 'doc' phải là một đối tượng pymupdf.Document.")
+        return default_extracted_data, []
+
+    if isinstance(page_numbers_to_process, int):
+        pages_to_process_indices = [page_numbers_to_process - 1]
+    elif isinstance(page_numbers_to_process, list) and all(
+        isinstance(pn, int) for pn in page_numbers_to_process
+    ):
+        pages_to_process_indices = sorted(
+            list(set(p - 1 for p in page_numbers_to_process))
         )
-        return new_first_row_df
+    elif page_numbers_to_process == "all":
+        pages_to_process_indices = list(range(len(doc)))
+    else:
+        logging.error(
+            "Lỗi: page_numbers_to_process phải là số nguyên hoặc danh sách số nguyên."
+        )
+        return default_extracted_data, []
 
-    result_df = pd.concat([new_first_row_df, df_copy], ignore_index=True)
+    for page_index in pages_to_process_indices:
+        if not (0 <= page_index < len(doc)):
+            logging.warning(
+                f"Cảnh báo: Số trang {page_index + 1} không hợp lệ. Bỏ qua."
+            )
+            continue
 
-    return result_df.reset_index(drop=True)
+        page = doc[page_index]
+        current_page_human_readable = page.number + 1
+        page_table_finder = page.find_tables(strategy="lines_strict")
+        all_found_table_bboxes_on_current_page: List[pymupdf.Rect] = []
+        if page_table_finder.tables:
+            all_found_table_bboxes_on_current_page = [
+                pymupdf.Rect(tbl.bbox) for tbl in page_table_finder.tables if tbl.bbox
+            ]
+
+        if page_table_finder.tables:
+            for table_obj in page_table_finder.tables:
+                if not table_obj.bbox:
+                    continue
+
+                df_original = table_obj.to_pandas()
+                df_original = preprocess_df(df_original)
+
+                if not df_original.empty:
+                    current_table_actual_bbox = pymupdf.Rect(table_obj.bbox)
+                    context_text_current_page = get_limited_text_before_table(
+                        page,
+                        current_table_actual_bbox,
+                        all_found_table_bboxes_on_current_page,
+                        n_tokens_context,
+                        search_height_multiplier=search_height_multiplier,
+                        min_search_height=min_search_height,
+                        # main_content_max_x_ratio có thể được truyền ở đây nếu muốn tùy chỉnh
+                    ).strip()
+                    combined_context = context_text_current_page
+                    if (
+                        not context_text_current_page
+                        and current_table_actual_bbox.y0
+                        < look_to_prev_page_threshold_y0
+                        and page_index > 0
+                    ):
+                        prev_page_index = page_index - 1
+                        prev_page = doc[prev_page_index]
+                        prev_page_table_finder = prev_page.find_tables()
+                        all_found_table_bboxes_on_prev_page: List[pymupdf.Rect] = []
+                        if prev_page_table_finder.tables:
+                            all_found_table_bboxes_on_prev_page = [
+                                pymupdf.Rect(tbl.bbox)
+                                for tbl in prev_page_table_finder.tables
+                                if tbl.bbox
+                            ]
+                        context_from_prev_page_bottom = (
+                            get_limited_text_from_bottom_of_page(
+                                prev_page,
+                                all_found_table_bboxes_on_prev_page,
+                                n_tokens_context,
+                                # main_content_max_x_ratio có thể được truyền ở đây
+                            ).strip()
+                        )
+                        if context_from_prev_page_bottom:
+                            combined_context = context_from_prev_page_bottom
+                    all_contexts.append(combined_context)
+                    all_dataframes.append(df_original)
+                    all_df_page_numbers.append(current_page_human_readable)
+    extracted_data_output: ExtractedDataType = {
+        "dataframes": all_dataframes,
+        "page_numbers": all_df_page_numbers,
+    }
+    if not (len(all_dataframes) == len(all_contexts) == len(all_df_page_numbers)):
+        logging.error(
+            f"Cảnh báo logic nghiêm trọng: Độ dài các list không khớp! DFs: {len(all_dataframes)}, Contexts: {len(all_contexts)}, PageNums: {len(all_df_page_numbers)}"
+        )
+        return default_extracted_data, []
+    return extracted_data_output, all_contexts
 
 
 def get_column_types(df: pd.DataFrame) -> List[str]:
-    """
-    Determine data types for each column
-
-    Args:
-        df: A pandas DataFrame to get column types from.
-
-    Returns:
-        A list of data types for each column.
-    """
     types: List[str] = []
     if df.columns.empty:
         return types
-
     for col_name in df.columns:
         current_column_object = df[col_name]
-
         is_truly_all_na = False
         effective_dtype = None
-
         if isinstance(current_column_object, pd.DataFrame):
             is_truly_all_na = pd.isna(current_column_object).all().all()
             if not is_truly_all_na:
@@ -214,7 +340,6 @@ def get_column_types(df: pd.DataFrame) -> List[str]:
         else:
             types.append("error_unexpected_type")
             continue
-
         if is_truly_all_na:
             types.append("unknown")
         else:
@@ -232,28 +357,10 @@ def get_column_types(df: pd.DataFrame) -> List[str]:
 def get_input_df(
     df: pd.DataFrame, n_rows: int = 10, sep: str = "=", max_tokens: int = 15
 ) -> str:
-    """
-    Get input DataFrame with sampling and formatting for LLM processing
-
-    Args:
-        df: A pandas DataFrame to get input DataFrame from.
-        n_rows: The number of rows to sample from the DataFrame.
-        sep: The separator to use for the CSV string.
-        max_tokens: The maximum number of tokens to use for the CSV string.
-
-    Returns:
-        A string representation of the DataFrame.
-    """
     if df.empty:
         return ""
-
     df_copy = df.copy()
-    df_copy = solve_non_header_table(
-        df_copy, [str(x) for x in range(len(df_copy.columns))]
-    )
-
     column_data_types = get_column_types(df_copy)
-
     for dtype, col_name in zip(column_data_types, df_copy.columns):
         if dtype == "object":
             if isinstance(df_copy[col_name], pd.Series):
@@ -262,739 +369,427 @@ def get_input_df(
                     df_copy.loc[:, col_name] = current_series.astype(str).apply(
                         lambda x: " ".join(x.split()[:max_tokens])
                     )
-                except (
-                    AttributeError
-                ):  # Handle cases where elements might not be strings
+                except AttributeError:
                     df_copy.loc[:, col_name] = current_series.apply(
                         lambda x: " ".join(str(x).split()[:max_tokens])
                     )
-                # pass was here, removed as it's not needed
-
     num_original_rows = len(df_copy)
     sampled_df_parts: List[pd.DataFrame] = []
-
     if num_original_rows <= n_rows:
         sampled_df_parts.append(df_copy)
     else:
         n_head = (n_rows + 1) // 2
         n_tail = n_rows - n_head
-
         sampled_df_parts.append(df_copy.head(n_head))
         if n_tail > 0:
             sampled_df_parts.append(df_copy.tail(n_tail))
-
     if not sampled_df_parts:
         return ""
-
     final_df_to_sample = pd.concat(sampled_df_parts)
     final_df_to_sample = final_df_to_sample.drop_duplicates().reset_index(drop=True)
-
-    return final_df_to_sample.to_csv(index=False, header=False, sep=sep)
-
-
-def _get_item_from_cref(
-    docling_document: Any, cref: str
-) -> Optional[Union[TextItem, TableItem]]:
-    """
-    Get an item from a Docling Document object using a cref.
-
-    Args:
-        docling_document: A Docling Document object.
-        cref: A cref to get an item from.
-
-    Returns:
-        An item from the Docling Document object.
-    """
-    try:
-        parts = cref.strip("#/").split("/")
-        item_type = parts[0]  # 'texts' hoặc 'tables'
-        item_index = int(parts[1])
-        if (
-            item_type == "texts"
-            and hasattr(docling_document, "texts")
-            and docling_document.texts
-            and item_index < len(docling_document.texts)
-        ):
-            return docling_document.texts[item_index]
-        elif (
-            item_type == "tables"
-            and hasattr(docling_document, "tables")
-            and docling_document.tables
-            and item_index < len(docling_document.tables)
-        ):
-            return docling_document.tables[item_index]
-        else:
-            logging.warning(
-                f"Warning: Cref '{cref}' không hợp lệ hoặc không tìm thấy.")
-            return None
-    except (IndexError, ValueError, AttributeError) as e:
-        logging.error(f"Error parsing cref '{cref}': {e}")
-        return None
+    markdown_table = final_df_to_sample.to_markdown(index=False, tablefmt="pipe")
+    return markdown_table
 
 
-def extract_raw_tables_from_docling(
-    docling_document: Any, n_tokens_previous: int = 20
-) -> Tuple[ExtractedDataType, str]:
-    """
-    Extract raw tables from a Docling Document object.
-
-    Args:
-        docling_document: A Docling Document object.
-        n_tokens_previous: The number of tokens to use for the preceding context.
-
-    Returns:
-        A tuple containing a dictionary with extracted data and a string representation of the prompt.
-    """
-    extracted_data: ExtractedDataType = {"dataframes": [], "page_numbers": []}
+def build_llm_prompt(extracted_data: ExtractedDataType, contexts: List[str]) -> str:
     full_prompt = ""
-    table_index = 0
-
-    doc_items = (
-        docling_document.body.children
-        if hasattr(docling_document, "body")
-        and hasattr(docling_document.body, "children")
-        and docling_document.body.children is not None  # Ensure children is not None
-        else []
-    )
-
-    for i, item_ref in enumerate(doc_items):
-        # Kiểm tra xem item hiện tại có phải là một bảng không
+    dataframes = extracted_data["dataframes"]
+    for i, df in enumerate(dataframes):
+        if df.empty:
+            continue
+        df_string = get_input_df(df, n_rows=7)
+        column_types = get_column_types(df=df)
+        n_columns = len(df.columns)
+        prompt_part = f"Table {i}:\n"
         if (
-            hasattr(item_ref, "cref")
-            and isinstance(item_ref.cref, str)
-            and item_ref.cref.startswith("#/tables/")
+            i < len(contexts) and contexts[i]
+        ):  # Check if context exists and is not empty
+            prompt_part += f"Context before table:\n{contexts[i]}\n\n"
+        prompt_part += f"{df_string}\nNumber of columns: {n_columns}\nColumn types: {column_types}\n\n"
+        full_prompt += prompt_part
+    return full_prompt
+
+
+# Định nghĩa lại hoặc đảm bảo ProcessedTableEntry được định nghĩa một lần với tất cả các trường
+class ProcessedTableEntry(TypedDict):
+    dataframe: pd.DataFrame
+    page_numbers: List[int]
+    source: str
+    associated_contexts: List[str]  # Thêm trường này
+
+
+def solve_non_header_table(df: pd.DataFrame, target_headers: List[str]) -> pd.DataFrame:
+    if not isinstance(target_headers, list):
+        logging.warning(
+            "Warning: target_headers không phải là list. Trả về DataFrame gốc."
+        )
+        return df.copy()
+    df_copy = df.copy()
+    first_row_data_values: List[Any] = []
+    for col_original_name in df_copy.columns:
+        if isinstance(col_original_name, str) and col_original_name.startswith(
+            "Unnamed:"
         ):
-            table_item = _get_item_from_cref(docling_document, item_ref.cref)
-
-            # Chỉ xử lý nếu là TableItem hợp lệ và có label là TABLE
-            if isinstance(table_item, TableItem) and table_item.label in [
-                DocItemLabel.TABLE
-            ]:
-                # --- Lấy ra page_number ---
-                page_number = -1  # default value of page
-                # Di chuyển kiểm tra hasattr và table_item.prov lên trước
-                if (
-                    hasattr(table_item, "prov")
-                    and isinstance(table_item.prov, list)
-                    and table_item.prov
-                ):
-                    first_provenance_item = table_item.prov[0]
-                    if hasattr(first_provenance_item, "page_no") and isinstance(
-                        first_provenance_item.page_no, int
-                    ):
-                        page_number = (
-                            first_provenance_item.page_no
-                        )  # Giả sử page_no đã là 1-indexed
-                    else:
-                        logging.warning(
-                            f"Attribute 'page_no' is missing, not an int, or None in the first ProvenanceItem for table {item_ref.cref}."
-                        )
-                else:
-                    logging.warning(
-                        f"Attribute 'prov' is missing, not a list, or empty for table {item_ref.cref}. Cannot determine page number."
-                    )
-
-                # --- Lấy ngữ cảnh văn bản phía trước ---
-                previous_text_snippet = ""
-                if i > 0:  # Đảm bảo không phải là item đầu tiên
-                    prev_item_ref = doc_items[i - 1]
-                    # Kiểm tra xem item trước đó có phải là text không
-                    if (
-                        hasattr(prev_item_ref, "cref")
-                        and isinstance(prev_item_ref.cref, str)
-                        and prev_item_ref.cref.startswith("#/texts/")
-                    ):
-                        prev_text_item = _get_item_from_cref(
-                            docling_document, prev_item_ref.cref
-                        )
-                        if (
-                            isinstance(prev_text_item, TextItem)
-                            and hasattr(prev_text_item, "text")
-                            and prev_text_item.text
-                        ):
-                            words = prev_text_item.text.split()
-                            # Lấy n từ cuối cùng làm ngữ cảnh
-                            previous_text_snippet = " ".join(
-                                words[-n_tokens_previous:])
-
-                # --- Xử lý DataFrame của bảng ---
-                df = preprocess_df(table_item.export_to_dataframe())
-                if df.empty:
-                    continue
-                df_string = get_input_df(df, n_rows=7)
-                column_types = get_column_types(df=df)
-                n_columns = len(df.columns)
-
-                # --- Xây dựng prompt ---
-                prompt_part = ""
-                if previous_text_snippet:
-                    prompt_part += f"Context before table:\n{previous_text_snippet}\n\n"
-                prompt_part += f"Table {table_index}:\n{df_string}\nNumber of columns: {n_columns}\nColumn types: {column_types}\n\n"
-
-                full_prompt += prompt_part
-                extracted_data["dataframes"].append(df)
-                extracted_data["page_numbers"].append(page_number)
-                table_index += 1
-
-    logging.info(
-        f"{len(extracted_data['dataframes'])} tables extracted and processed with preceding context."
-    )
-    return extracted_data, full_prompt
-
-
-def _build_header_details_map(concat_json: Dict[str, Any]) -> Dict[int, Dict[str, Any]]:
-    """
-    Xây dựng một map từ table_index đến thông tin header của nó từ concat_json.
-    """
-    header_details_map: Dict[int, Dict[str, Any]] = {}
-    if not isinstance(concat_json, dict):
-        logging.warning(
-            "Cảnh báo: concat_json không phải là dictionary. Không thể xây dựng header_details_map."
-        )
-        return header_details_map
-
-    headers_info_list = concat_json.get("headers_info", [])
-    if not isinstance(headers_info_list, list):
-        if headers_info_list is not None:
-            logging.warning(
-                "Cảnh báo: 'headers_info' trong concat_json không phải list."
-            )
-        return header_details_map
-
-    for info_entry in headers_info_list:
-        if not (
-            isinstance(info_entry, dict)
-            and "table_index" in info_entry
-            and "headers" in info_entry
-        ):
-            logging.warning(
-                f"Cảnh báo: Entry headers_info không hợp lệ: {info_entry}. Bỏ qua."
-            )
-            continue
-
-        table_indices = info_entry["table_index"]
-        headers = info_entry["headers"]
-        is_guessed = info_entry.get("is_header_guessed", True)
-
-        if not isinstance(table_indices, list):
-            if isinstance(table_indices, int):
-                table_indices = [table_indices]
-            else:
-                logging.warning(
-                    f"Cảnh báo: 'table_index' trong headers_info không phải list hoặc int: {info_entry}. Bỏ qua."
-                )
-                continue
-
-        if not isinstance(headers, list):
-            logging.warning(
-                f"Cảnh báo: 'headers' trong headers_info không phải list: {info_entry}. Bỏ qua."
-            )
-            continue
-
-        for idx in table_indices:
-            if not isinstance(idx, int):
-                logging.warning(
-                    f"Cảnh báo: Chỉ mục không phải int '{idx}' trong headers_info.table_index. Bỏ qua."
-                )
-                continue
-            if idx not in header_details_map:
-                header_details_map[idx] = {
-                    "headers": headers, "is_guessed": is_guessed}
-
-    if not header_details_map:
-        logging.info(
-            "Thông tin: 'header_details_map' rỗng sau khi xử lý 'headers_info'."
-        )
-    return header_details_map
-
-
-def _apply_headers_to_table(
-    df_original: pd.DataFrame,  # DataFrame gốc (chưa copy)
-    target_headers: List[str],
-    is_guessed: bool,
-) -> Optional[pd.DataFrame]:  # Trả về DataFrame đã xử lý hoặc None nếu lỗi nghiêm trọng
-    """
-    Áp dụng header cho DataFrame. Trả về DataFrame đã xử lý,
-    hoặc None nếu có lỗi không thể xử lý (ví dụ: số cột không khớp).
-    """
-    df_to_process = df_original.copy()  # Làm việc trên bản sao
-    if len(df_to_process.columns) != len(target_headers):
-        logging.warning(
-            f"Cảnh báo: Số cột không khớp khi áp dụng header. Bảng có {len(df_to_process.columns)} cột, "
-            f"header đích có {len(target_headers)} cột. Không thể xử lý header."
-        )
-        return None
-
-    if is_guessed:
-        return solve_non_header_table(df_to_process, target_headers)
-    else:
-        try:
-            df_to_process.columns = target_headers
-            return df_to_process
-        except ValueError as e:
-            logging.error(
-                f"Lỗi nghiêm trọng khi gán target_headers trực tiếp: {e}. "
-                f"(DataFrame columns: {len(df_to_process.columns)}, target_headers length: {len(target_headers)})"
-            )
-            return None
-
-
-def _process_concatenation_group(
-    group_indices: List[int],
-    all_dataframes: List[pd.DataFrame],
-    all_page_numbers: List[int],
-    header_details_map: Dict[int, Dict[str, Any]],
-    source_name: str,  # Thêm source_name
-) -> List[ProcessedTableEntry]:
-    """
-    Xử lý một nhóm các bảng được chỉ định để ghép nối.
-    Trả về một danh sách các ProcessedTableEntry.
-    """
-    group_results: List[ProcessedTableEntry] = []
-
-    group_level_header_details: Optional[Dict[str, Any]] = None
-    for idx_in_group in group_indices:
-        if idx_in_group in header_details_map:
-            group_level_header_details = header_details_map[idx_in_group]
-            break
-
-    if group_level_header_details is None:
-        logging.warning(
-            f"Cảnh báo quan trọng: Không tìm thấy 'headers_info' cho group {group_indices}. Thêm bảng gốc riêng lẻ."
-        )
-        for original_df_idx in group_indices:
-            page_num = (
-                all_page_numbers[original_df_idx]
-                if 0 <= original_df_idx < len(all_page_numbers)
-                else -1
-            )
-            group_results.append(
-                {
-                    "dataframe": all_dataframes[original_df_idx].copy(),
-                    "page_numbers": [page_num] if page_num != -1 else [-1],
-                    "source": source_name,
-                }
-            )
-        return group_results
-
-    group_target_headers: List[str] = group_level_header_details["headers"]
-    is_group_header_guessed: bool = group_level_header_details["is_guessed"]
-
-    # Lưu trữ (DataFrame đã xử lý, danh sách trang gốc của chính DF đó)
-    processed_dfs_with_their_pages: List[Tuple[pd.DataFrame, List[int]]] = []
-
-    for original_df_idx in group_indices:
-        current_df_original = all_dataframes[original_df_idx]
-        page_num_list_for_df: List[int] = [-1]
-        if 0 <= original_df_idx < len(all_page_numbers):
-            page_val = all_page_numbers[original_df_idx]
-            page_num_list_for_df = [page_val] if page_val != -1 else [-1]
-
-        processed_df = _apply_headers_to_table(
-            current_df_original,  # _apply_headers_to_table sẽ tự copy
-            group_target_headers,
-            is_group_header_guessed,
-        )
-
-        if processed_df is None:
-            logging.warning(
-                f"Bảng tại index {original_df_idx} trong group {group_indices} không thể xử lý header. Thêm bảng gốc."
-            )
-            group_results.append(
-                {  # Thêm trực tiếp vào group_results nếu không xử lý được cho nhóm
-                    "dataframe": current_df_original.copy(),
-                    "page_numbers": page_num_list_for_df,
-                    "source": source_name,
-                }
-            )
+            first_row_data_values.append(np.nan)
         else:
-            processed_dfs_with_their_pages.append(
-                (processed_df, page_num_list_for_df))
-
-    if not processed_dfs_with_their_pages:
-        # group_results có thể đã chứa các bảng gốc nếu tất cả lỗi
-        if not group_results and group_indices:
-            logging.warning(
-                f"Cảnh báo: Không có DataFrame nào trong group {group_indices} được chuẩn bị để ghép (sau khi xử lý header)."
+            first_row_data_values.append(str(col_original_name))
+    if len(first_row_data_values) != len(target_headers):
+        if len(first_row_data_values) > len(target_headers):
+            first_row_data_values = first_row_data_values[: len(target_headers)]
+        else:
+            first_row_data_values.extend(
+                [np.nan] * (len(target_headers) - len(first_row_data_values))
             )
-        return group_results
-
-    if len(processed_dfs_with_their_pages) == 1:
-        df_single, pages_single = processed_dfs_with_their_pages[0]
-        group_results.append(
-            {
-                "dataframe": df_single,
-                "page_numbers": pages_single,
-                "source": source_name,
-            }
-        )
+    new_first_row_df = pd.DataFrame([first_row_data_values], columns=target_headers)
+    num_target_cols = len(target_headers)
+    current_data_cols = df_copy.shape[1]
+    if num_target_cols == 0:
+        if current_data_cols > 0:
+            df_copy = pd.DataFrame(index=df_copy.index)
     else:
-        dataframes_to_pd_concat = [item[0]
-                                   for item in processed_dfs_with_their_pages]
-        combined_pages_for_group: List[int] = sorted(
-            list(
-                set(
-                    p
-                    for item in processed_dfs_with_their_pages
-                    for p in item[1]
-                    if p != -1
-                )
-            )
-        )
-        if not combined_pages_for_group and any(
-            p == -1
-            for item in processed_dfs_with_their_pages
-            for p_list in item[1]
-            for p in p_list
-        ):
-            combined_pages_for_group = [-1]
-
-        try:
-            final_df_group = pd.concat(
-                dataframes_to_pd_concat, ignore_index=True)
-            group_results.append(
-                {
-                    "dataframe": final_df_group,
-                    "page_numbers": combined_pages_for_group,
-                    "source": source_name,
-                }
-            )
-        except Exception as e:
-            logging.error(
-                f"Lỗi khi ghép DataFrames trong group {group_indices}: {e}. Thêm các DF đã xử lý header riêng lẻ."
-            )
-            for df_item, pages_item in processed_dfs_with_their_pages:
-                group_results.append(
-                    {
-                        "dataframe": df_item,
-                        "page_numbers": pages_item,
-                        "source": source_name,
-                    }
-                )
-
-    return group_results
+        if current_data_cols < num_target_cols:
+            for i in range(num_target_cols - current_data_cols):
+                df_copy[f"__temp_added_col_{i}"] = np.nan
+        elif current_data_cols > num_target_cols:
+            df_copy = df_copy.iloc[:, :num_target_cols]
+    df_copy.columns = target_headers
+    result_df = pd.concat([new_first_row_df, df_copy], ignore_index=True)
+    return result_df.reset_index(drop=True)
 
 
 def main_concatenation_logic(
     extracted_data: ExtractedDataType,
+    contexts: List[str],  # Thêm contexts vào tham số
     concat_json: Dict[str, Any],
-    source_name: str,  # Tham số mới
+    source_name: str,
 ) -> List[ProcessedTableEntry]:
-    """
-    Ghép nối DataFrames dựa trên nhóm trong concat_json.
-    Header được áp dụng dựa trên 'headers_info'.
-    Trả về danh sách các dictionary, mỗi dictionary chứa 'dataframe',
-    'page_numbers', và 'source'.
-    """
-    final_results: List[ProcessedTableEntry] = []
-    processed_indices_from_json: set[int] = set()
+    all_original_dataframes = extracted_data["dataframes"]
+    all_original_page_numbers = extracted_data["page_numbers"]
 
-    all_dataframes: List[pd.DataFrame] = extracted_data["dataframes"]
-    all_page_numbers: List[int] = extracted_data["page_numbers"]
-
-    if not all(isinstance(t, pd.DataFrame) for t in all_dataframes) or len(
-        all_dataframes
-    ) != len(all_page_numbers):
-        logging.error(
-            "Lỗi: 'extracted_data' không hợp lệ hoặc 'dataframes' và 'page_numbers' không khớp."
-        )
-        return []
-
-    header_details_map = _build_header_details_map(concat_json)
-
-    instructions_list: List[Dict[str, Any]] = []
-    if isinstance(concat_json, dict):
-        instructions_list = concat_json.get("concatable_tables", [])
-        if not isinstance(instructions_list, list):
-            logging.warning(
-                "Cảnh báo: 'concatable_tables' trong concat_json không phải list."
-            )
-            instructions_list = []
-    elif concat_json is not None:
-        logging.warning("Cảnh báo: 'concat_json' không phải dictionary.")
-
-    for group_instruction in instructions_list:
-        if not (
-            isinstance(group_instruction,
-                       dict) and "table_index" in group_instruction
-        ):
-            logging.warning(
-                f"Cảnh báo: Group instruction không hợp lệ: {group_instruction}. Bỏ qua."
-            )
-            continue
-
-        table_indices_from_json_group = group_instruction.get(
-            "table_index", [])
-        if not (
-            isinstance(table_indices_from_json_group, list)
-            and table_indices_from_json_group
-        ):
-            logging.warning(
-                f"Cảnh báo: 'table_index' trong group không hợp lệ hoặc rỗng: {group_instruction}. Bỏ qua."
-            )
-            continue
-
-        valid_indices_in_this_json_group: List[int] = []
-        for index in table_indices_from_json_group:
-            if not isinstance(index, int):
-                logging.warning(
-                    f"Cảnh báo: Chỉ mục không phải int '{index}' trong group {table_indices_from_json_group}. Bỏ qua."
-                )
-                continue
-            if 0 <= index < len(all_dataframes):
-                valid_indices_in_this_json_group.append(index)
-            else:
-                logging.warning(
-                    f"Cảnh báo: Chỉ mục {index} ngoài phạm vi. Bỏ qua trong group {table_indices_from_json_group}."
-                )
-
-        if not valid_indices_in_this_json_group:
-            logging.warning(
-                f"Cảnh báo: Không có DataFrame hợp lệ để xử lý cho group {table_indices_from_json_group}."
-            )
-            continue
-
-        for idx in valid_indices_in_this_json_group:
-            processed_indices_from_json.add(idx)
-
-        group_processed_entries = _process_concatenation_group(
-            valid_indices_in_this_json_group,
-            all_dataframes,
-            all_page_numbers,
-            header_details_map,
-            source_name,  # Truyền source_name vào hàm xử lý nhóm
-        )
-        final_results.extend(group_processed_entries)
-
-    # Xử lý các bảng độc lập
-    all_available_indices_set = set(range(len(all_dataframes)))
-    independent_table_indices = sorted(
-        list(all_available_indices_set - processed_indices_from_json)
-    )
-
-    for idx in independent_table_indices:
-        original_df = all_dataframes[idx]
-
-        page_num = all_page_numbers[idx] if 0 <= idx < len(
-            all_page_numbers) else -1
-        current_pages_list: List[int] = [page_num] if page_num != -1 else [-1]
-
-        header_details = header_details_map.get(idx)
-        final_df_for_independent_table: pd.DataFrame
-
-        if header_details is None:
-            logging.info(
-                f"Thông tin: Không tìm thấy 'headers_info' cho bảng độc lập tại index {idx}. Sử dụng bảng gốc."
-            )
-            final_df_for_independent_table = original_df.copy()
-        else:
-            target_headers: List[str] = header_details["headers"]
-            is_guessed: bool = header_details["is_guessed"]
-
-            processed_df = _apply_headers_to_table(
-                original_df, target_headers, is_guessed
-            )  # original_df sẽ được copy bên trong
-
-            if (
-                processed_df is None
-            ):  # Lỗi khi áp dụng header, _apply_headers_to_table trả về None
-                logging.warning(
-                    f"Không thể xử lý header cho bảng độc lập {idx}. Sử dụng bảng gốc."
-                )
-                final_df_for_independent_table = original_df.copy()
-            else:
-                final_df_for_independent_table = processed_df
-
-        final_results.append(
-            {
-                "dataframe": final_df_for_independent_table,
-                "page_numbers": current_pages_list,
-                "source": source_name,
-            }
-        )
-
-    return final_results
-
-
-def extract_tables_from_sources(
-    sources: List[str],
-) -> List[ProcessedTableEntry]:  # Cập nhật type hint trả về
-    """
-    Trích xuất các bảng đã ghép nối từ danh sách các file PDF.
-    """
-    converter = PDFConverter()
-    conversions = converter.convert(
-        sources
-    )  # conversions là Dict[str, Any] (Any là docling_document)
-
-    # Khởi tạo để tích lũy kết quả
-    all_final_results: List[ProcessedTableEntry] = []
-
-    for source_path, docling_document in conversions.items():
-        # Trích xuất tên file rút gọn từ source_path
-        # Ví dụ: "/path/to/filename.pdf" -> "filename"
-        base_name_with_ext = os.path.basename(source_path)
-        source_name_short = os.path.splitext(base_name_with_ext)[0]
-
-        logging.info(
-            f"Đang xử lý nguồn: {source_name_short} (từ: {source_path})")
-
-        extracted_data, full_prompt = extract_raw_tables_from_docling(
-            docling_document)
-
-        # Giả sử hàm generate của bạn trả về Dict[str, Any]
-        # Bạn cần đảm bảo hàm generate(full_prompt) được định nghĩa và hoạt động
-        try:
-            concat_json: Dict[str, Any] = generate(full_prompt)  # Gọi API LLM
-        except Exception as e:
+    if len(all_original_dataframes) != len(all_original_page_numbers):
+        # Kiểm tra thêm với contexts nếu nó được sử dụng để khớp chỉ mục
+        if len(all_original_dataframes) != len(contexts):
             logging.error(
-                f"Lỗi khi gọi API LLM cho source {source_name_short}: {e}")
-            # Quyết định cách xử lý: bỏ qua source này, hoặc thử lại, hoặc thêm các bảng chưa xử lý
-            # Ví dụ: thêm tất cả các bảng từ extracted_data mà không ghép nối
-            for i, df in enumerate(extracted_data["dataframes"]):
-                page_num = extracted_data["page_numbers"][i]
-                all_final_results.append(
-                    {
-                        "dataframe": df.copy(),
-                        "page_numbers": [page_num] if page_num != -1 else [-1],
-                        "source": source_name_short,
-                    }
-                )
-            continue  # Chuyển sang source tiếp theo
-
-        results_for_current_source = main_concatenation_logic(
-            extracted_data,
-            concat_json,
-            source_name_short,  # Truyền tên nguồn đã rút gọn
-        )
-        all_final_results.extend(
-            results_for_current_source)  # Tích lũy kết quả
-
-    return all_final_results
-
-
-def extract_tables_from_docling(
-    docling_document: Any,
-) -> List[ProcessedTableEntry]:  # Cập nhật type hint
-    """
-    Trích xuất bảng từ một đối tượng Docling Document.
-    """
-    source_name_short = "unknown_source"  # Giá trị mặc định
-    if (
-        hasattr(docling_document, "origin")
-        and docling_document.origin
-        and hasattr(docling_document.origin, "filename")
-        and docling_document.origin.filename
-    ):
-        base_name_with_ext = os.path.basename(docling_document.origin.filename)
-        source_name_short = os.path.splitext(base_name_with_ext)[0]
-
-    logging.info(f"Đang xử lý tài liệu Docling: {source_name_short}")
-
-    extracted_data, full_prompt = extract_raw_tables_from_docling(
-        docling_document)
-
-    try:
-        concat_json: Dict[str, Any] = generate(full_prompt)  # Gọi API LLM
-    except Exception as e:
-        logging.error(
-            f"Lỗi khi gọi API LLM cho docling_document {source_name_short}: {e}"
-        )
-        # Xử lý tương tự như trong extract_tables_from_sources nếu generate lỗi
-        fallback_results: List[ProcessedTableEntry] = []
-        for i, df in enumerate(extracted_data["dataframes"]):
-            page_num = extracted_data["page_numbers"][i]
-            fallback_results.append(
-                {
-                    "dataframe": df.copy(),
-                    "page_numbers": [page_num] if page_num != -1 else [-1],
-                    "source": source_name_short,
-                }
+                "Số lượng DataFrame, số lượng page_numbers và/hoặc contexts trong extracted_data không khớp."
             )
-        return fallback_results
+            raise ValueError(
+                "Số lượng DataFrame, số lượng page_numbers và/hoặc contexts không khớp."
+            )
 
-    concatenated_results = main_concatenation_logic(
+    processed_tables_result: List[ProcessedTableEntry] = []
+    processed_df_indices: Set[int] = set()
+
+    if "concatable_tables" in concat_json and concat_json["concatable_tables"]:
+        for group_info in concat_json["concatable_tables"]:
+            indices_in_group = group_info.get("table_index", [])
+            if not indices_in_group:
+                continue
+
+            actual_indices_for_this_concat_group: List[int] = []
+            group_contexts: List[str] = []  # Ngữ cảnh cho nhóm này
+
+            for idx in indices_in_group:
+                if 0 <= idx < len(all_original_dataframes):
+                    actual_indices_for_this_concat_group.append(idx)
+                    processed_df_indices.add(idx)
+                    # Lấy ngữ cảnh tương ứng nếu contexts đủ dài
+                    if idx < len(contexts):
+                        group_contexts.append(contexts[idx])
+                    else:
+                        group_contexts.append("")  # Hoặc xử lý khác nếu context thiếu
+                else:
+                    logging.warning(f"Index {idx} out of bounds, skipping for group.")
+
+            if not actual_indices_for_this_concat_group:
+                continue
+
+            current_group_original_dfs = [
+                all_original_dataframes[idx]
+                for idx in actual_indices_for_this_concat_group
+            ]
+            pages_for_this_group: Set[int] = set()
+            for valid_idx in actual_indices_for_this_concat_group:
+                pages_for_this_group.add(all_original_page_numbers[valid_idx])
+
+            max_cols_in_group = 0
+            valid_dfs_for_shape_check = [
+                df for df in current_group_original_dfs if isinstance(df, pd.DataFrame)
+            ]
+            if valid_dfs_for_shape_check:
+                col_counts = [df.shape[1] for df in valid_dfs_for_shape_check]
+                if col_counts:
+                    max_cols_in_group = max(col_counts)
+
+            group_target_headers = [str(i) for i in range(max_cols_in_group)]
+            processed_dfs_for_group: List[pd.DataFrame] = []
+            for df_original in current_group_original_dfs:
+                if isinstance(df_original, pd.DataFrame):
+                    processed_df = solve_non_header_table(
+                        df_original, group_target_headers
+                    )
+                    processed_dfs_for_group.append(processed_df)
+                else:
+                    logging.warning(
+                        f"Item at index used for group is not a DataFrame, skipping."
+                    )
+
+            if processed_dfs_for_group:
+                final_concatenated_df = pd.concat(
+                    processed_dfs_for_group, ignore_index=True
+                )
+                final_concatenated_df = preprocess_df(final_concatenated_df)
+                new_entry: ProcessedTableEntry = {
+                    "dataframe": final_concatenated_df,
+                    "page_numbers": sorted(list(pages_for_this_group)),
+                    "source": get_pdf_name(source_name),
+                    "associated_contexts": group_contexts,  # Gán ngữ cảnh của nhóm
+                }
+                processed_tables_result.append(new_entry)
+            elif actual_indices_for_this_concat_group:
+                logging.warning(
+                    f"Group with original indices {actual_indices_for_this_concat_group} resulted in no DataFrames to concatenate."
+                )
+
+    total_num_dataframes = len(all_original_dataframes)
+    for i in range(total_num_dataframes):
+        if i not in processed_df_indices:
+            independent_dataframe = all_original_dataframes[i]
+            # Sử dụng tên cột hiện tại làm target_headers cho bảng độc lập nếu không muốn đánh số lại
+            # Hoặc tạo target_headers dựa trên số cột như cũ
+            current_cols_count = (
+                len(independent_dataframe.columns)
+                if isinstance(independent_dataframe, pd.DataFrame)
+                else 0
+            )
+            target_headers_independent = [str(j) for j in range(current_cols_count)]
+
+            # Xử lý solve_non_header_table cho bảng độc lập
+            # Cần đảm bảo independent_dataframe là DataFrame trước khi gọi
+            if isinstance(independent_dataframe, pd.DataFrame):
+                processed_independent_df = solve_non_header_table(
+                    independent_dataframe, target_headers_independent
+                )
+            else:
+                # Nếu không phải DataFrame, có thể tạo DataFrame rỗng hoặc log lỗi
+                logging.warning(
+                    f"Independent item at index {i} is not a DataFrame, creating empty DF."
+                )
+                processed_independent_df = pd.DataFrame()
+
+            page_number_list = [all_original_page_numbers[i]]
+
+            individual_context: List[str] = []  # Ngữ cảnh cho bảng độc lập
+            if i < len(contexts):
+                individual_context.append(contexts[i])
+            else:
+                individual_context.append("")
+
+            independent_entry: ProcessedTableEntry = {
+                "dataframe": processed_independent_df,  # Sử dụng DataFrame đã qua xử lý
+                "page_numbers": page_number_list,
+                "source": get_pdf_name(
+                    source_name
+                ),  # Sử dụng get_pdf_name cho nhất quán
+                "associated_contexts": individual_context,  # Gán ngữ cảnh
+            }
+            processed_tables_result.append(independent_entry)
+
+    return processed_tables_result
+
+
+def get_table_content_from_file(file_path: str) -> Tuple[ExtractedDataType, List[str]]:
+    doc = pymupdf.open(file_path)
+    # Giả sử extract_tables_and_contexts trả về cả contexts
+    extracted_data, contexts = extract_tables_and_contexts(doc)
+    return extracted_data, contexts
+
+
+def process_pdf_file_from_extracted_data(
+    extracted_data: ExtractedDataType,
+    contexts: List[str],  # contexts đã có ở đây
+    return_type: Literal["dataframe", "markdown"] = "dataframe",
+    verbose: bool = False,
+    source_name: str = "testing",
+) -> List[ProcessedTableEntry]:
+    # Tạo prompt cho LLM
+    llm_prompt = build_llm_prompt(extracted_data, contexts)
+    concat_json = generate(llm_prompt)
+
+    # Gọi main_concatenation_logic với contexts
+    processed_tables_result = main_concatenation_logic(
         extracted_data,
+        contexts,  # Truyền contexts vào
         concat_json,
-        source_name_short,  # Truyền tên nguồn đã rút gọn
+        source_name,  # source_name ở đây là file_path gốc hoặc tên định danh
     )
-    return concatenated_results
+    # Phần còn lại của hàm không thay đổi cách xử lý return_type
+    if return_type == "markdown":
+        for table_entry in processed_tables_result:
+            # Đảm bảo dataframe là pd.DataFrame trước khi gọi to_markdown
+            if isinstance(table_entry["dataframe"], pd.DataFrame):
+                table_entry["dataframe"] = table_entry["dataframe"].to_markdown(
+                    index=False
+                )
+            else:  # Xử lý trường hợp không phải DataFrame (ví dụ: nếu lỗi xảy ra)
+                table_entry["dataframe"] = "Error: DataFrame not available"
+
+    return processed_tables_result
 
 
-def display_tables(tables: List[pd.DataFrame], n_rows: int = 3) -> None:
-    """
-    Display tables in a Jupyter Notebook.
+def process_pdf_file(
+    file_paths: Union[str, List[str]],
+    return_type: Literal["dataframe", "markdown"] = "dataframe",
+    verbose: Literal[0, 1, 2] = 0,
+) -> List[ProcessedTableEntry]:
+    final_processed_tables_result: List[ProcessedTableEntry] = []
+    final_concat_json_list: list = []  # Đổi tên để tránh nhầm lẫn với biến concat_json cục bộ
+    final_input_tokens: list = []
+    final_output_tokens: list = []
 
-    Args:
-        tables: A list of DataFrames to display.
-        n_rows: The number of rows to display.
-    """
-    from IPython.display import display
+    if isinstance(file_paths, str):
+        file_paths = [file_paths]
 
-    for idx, table in enumerate(tables):
-        print(f"Table {idx}:")
-        display(table.head(n_rows))
-        print(f"Shape: {table.shape}")
-        print(f"Columns: {table.columns.tolist()}")
-        print("\n")
+    start_time = time.time()
+    for file_path in file_paths:
+        if verbose >= 1:
+            print(f"Processing file: {get_pdf_name(file_path)}...")
 
+        # get_table_content_from_file giờ trả về cả extracted_data và contexts
+        extracted_data, contexts = get_table_content_from_file(file_path)
 
-def table_to_markdown(table: pd.DataFrame, name: str, page_numbers: List[int]) -> str:
-    markdown_str = f"# {name}\n"
-    if len(page_numbers) > 1:
-        # cross-page table
-        markdown_str += f"This is a cross-page table. It spans multiple pages. Page numbers: {page_numbers}\n"
-    else:
-        # single-page table
-        markdown_str += (
-            f"This is a single-page table. Page number: {page_numbers[0]}\n\n"
+        # Xây dựng prompt và gọi LLM
+        llm_prompt = build_llm_prompt(extracted_data, contexts)
+        if verbose >= 2:
+            print(f"LLM prompt: {llm_prompt}")
+        concat_json = generate(llm_prompt)  # Đây là dict
+        if verbose >= 2:
+            print(f"Concat JSON: {concat_json}")
+
+        # Gọi main_concatenation_logic với contexts
+        processed_tables_result_single_file = main_concatenation_logic(
+            extracted_data,
+            contexts,  # Truyền contexts
+            concat_json,
+            file_path,  # Truyền file_path làm source_name
         )
-    markdown_str += table.to_markdown(index=False)
+        final_processed_tables_result.extend(processed_tables_result_single_file)
+        final_concat_json_list.append(concat_json)  # Thêm dict vào list
+        final_input_tokens.append(concat_json.get("input_tokens", 0))
+        final_output_tokens.append(concat_json.get("output_tokens", 0))
 
-    table_shape = table.shape
-    markdown_str += f"\n\nShape: {table_shape}\n"
+        if verbose >= 1:
+            print(
+                f"File: {get_pdf_name(file_path)}, Input tokens: {concat_json.get('input_tokens', 0)}, Output tokens: {concat_json.get('output_tokens', 0)}"
+            )
 
-    return markdown_str
+    if verbose >= 1 and final_concat_json_list:  # Kiểm tra final_concat_json_list không rỗng
+        print(
+            f"Model: {final_concat_json_list[0].get('model', 'N/A')}, Total input tokens: {sum(final_input_tokens)}, Total output tokens: {sum(final_output_tokens)}"
+        )
+    end_time = time.time()
+    print(f"Time taken: {end_time - start_time:.3f} seconds")
+
+    if return_type == "markdown":
+        for table_entry in final_processed_tables_result:
+            if isinstance(table_entry["dataframe"], pd.DataFrame):
+                table_entry["dataframe"] = table_entry["dataframe"].to_markdown(
+                    index=False
+                )
+            else:
+                table_entry["dataframe"] = "Error: DataFrame not available"
+
+    return final_processed_tables_result
 
 
 def get_table_content(
     processed_tables_with_pages: List[ProcessedTableEntry],
 ) -> Dict[str, List[Dict[str, Any]]]:
-    results: Dict[str, List[Dict[str, Any]]] = {}
+    """
+    Hàm này xuất kết quả dưới dạng markdown, bao gồm cả ngữ cảnh trước bảng.
+    """
 
+    def table_to_markdown(
+        table: pd.DataFrame,
+        name: str,
+        page_numbers: List[int],
+        associated_contexts: List[str],  # Thêm tham số ngữ cảnh
+    ) -> str:
+        markdown_str = f"# {name}\n"
+
+        # Hiển thị ngữ cảnh liên quan
+        if associated_contexts:
+            # Lọc bỏ các ngữ cảnh rỗng trước khi join hoặc hiển thị
+            filtered_contexts = [
+                ctx for ctx in associated_contexts if ctx and ctx.strip()
+            ]
+            if filtered_contexts:
+                markdown_str += "## Associated Context(s) Before Table:\n"
+                for ctx_item in filtered_contexts:
+                    markdown_str += (
+                        f"- {ctx_item}\n"  # Hiển thị mỗi context trên một dòng mới
+                    )
+                markdown_str += "\n"  # Thêm một dòng trống sau phần ngữ cảnh
+
+        if len(page_numbers) > 1:
+            markdown_str += f"Cross-page table spanning pages: {page_numbers}\n"
+        else:
+            markdown_str += (
+                f"This is a single-page table. Page number: {page_numbers[0]}\n\n"
+            )
+
+        markdown_str += table.to_markdown(index=False)
+        table_shape = table.shape
+        markdown_str += f"\n\nShape: {table_shape}\n"
+        return markdown_str
+
+    results: Dict[str, List[Dict[str, Any]]] = {}
     sources_ = set(table["source"] for table in processed_tables_with_pages)
 
-    for source in sources_:
-        pdf_name = os.path.basename(source)
-        file_name_part, file_extension_part = os.path.splitext(pdf_name)
-
-        # lấy ra các processed_tables_with_pages_i mà có key 'source' = với file_name_part
+    for source_pdf_name in sources_:  # Đổi tên biến để rõ ràng hơn
+        # Lấy các bảng thuộc về source_pdf_name này
         processed_tables_source = [
-            table
-            for table in processed_tables_with_pages
-            if table["source"] == file_name_part
+            table_entry
+            for table_entry in processed_tables_with_pages
+            if table_entry["source"] == source_pdf_name
         ]
 
-        # logging
-        print(
-            f"source {file_name_part} has {len(processed_tables_source)} tables")
+        logging.info(
+            f"Source {source_pdf_name} has {len(processed_tables_source)} tables for markdown generation."
+        )
 
-        for idx, table in enumerate(processed_tables_source):
-            table_df = table["dataframe"]
-            page_numbers = table["page_numbers"]
-            table_name = f"{file_name_part}_table_{idx}"
+        for idx, table_entry_item in enumerate(processed_tables_source):
+            table_df = table_entry_item["dataframe"]
+            # Đảm bảo table_df là DataFrame, nếu không thì tạo DataFrame rỗng hoặc xử lý lỗi
+            if not isinstance(table_df, pd.DataFrame):
+                logging.warning(
+                    f"Item for {source_pdf_name}_table_{idx} is not a DataFrame. Skipping markdown generation for this item."
+                )
+                # Hoặc tạo một DataFrame rỗng để tránh lỗi to_markdown
+                # table_df = pd.DataFrame(["Error: Data is not a valid DataFrame."])
+                continue  # Bỏ qua nếu không phải DataFrame
+
+            table_df = table_df.fillna("")  # Xử lý NaN trước khi chuyển sang markdown
+            page_numbers = table_entry_item["page_numbers"]
+            associated_contexts = table_entry_item.get(
+                "associated_contexts", []
+            )  # Lấy ngữ cảnh
+
+            table_name = f"{source_pdf_name}_table_{idx}"
+
+            # Gọi table_to_markdown với ngữ cảnh
             markdown_str = table_to_markdown(
-                table_df, table_name, page_numbers)
+                table_df, table_name, page_numbers, associated_contexts
+            )
 
-            result = {
+            result_item = {
                 "table_content": markdown_str,
                 "page_numbers": page_numbers,
-                "source": file_name_part,
+                "source": source_pdf_name,
                 "table_idx": idx,
+                "associated_contexts": associated_contexts,
             }
-            if file_name_part not in results:
-                results[
-                    file_name_part
-                ] = []
-            results[file_name_part].append(result)
+            if source_pdf_name not in results:
+                results[source_pdf_name] = []
+            results[source_pdf_name].append(result_item)
+
     return results
