@@ -3,7 +3,7 @@ import json
 import shutil
 import requests
 
-from sentence_transformers import SentenceTransformer
+# from sentence_transformers import SentenceTransformer
 import pathlib
 import textwrap
 import google.generativeai as genai
@@ -22,11 +22,11 @@ pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tessera
 import os
 import json
 from dotenv import load_dotenv
-from langchain_google_genai import ChatGoogleGenerativeAI
+# from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_openai import ChatOpenAI
 from langchain.prompts import PromptTemplate
 from langchain.chains import LLMChain
-from langchain_google_vertexai import ChatVertexAI
+# from langchain_google_vertexai import ChatVertexAI
 from pydantic import BaseModel, Field
 from typing import List, Optional
 from google.oauth2 import service_account
