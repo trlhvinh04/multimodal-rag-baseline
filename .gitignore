@@ -30,3 +30,4 @@ img/
 data/raw/
 data/processed/
 []
+*.json
