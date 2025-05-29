@@ -4,6 +4,10 @@ __pycache__/
 *$py.class
 test*.*
 
+*.csv
+*.png
+*.md
+*.jpg
 # Environments
 .env
 .venv
