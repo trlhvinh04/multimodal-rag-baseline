@@ -4,6 +4,10 @@ __pycache__/
 *$py.class
 test*.*
 
+*.csv
+*.png
+*.md
+*.jpg
 # Environments
 .env
 .venv
@@ -17,7 +21,8 @@ img/
 
 # IDE configuration files
 .idea/            # JetBrains IDEs (PyCharm, IntelliJ)
-.vscode/          # Visual Studio Code (allow .vscode/launch.json and .vscode/tasks.json if team shares them)
+.vscode/
+*.pyc          # Visual Studio Code (allow .vscode/launch.json and .vscode/tasks.json if team shares them)
 # .vscode/*
 # !.vscode/settings.json
 # !.vscode/tasks.json
@@ -27,6 +32,11 @@ img/
 # *.sublime-workspace
 
 # Data files
+data/
 data/raw/
 data/processed/
 data/pdf/
+gdsc2025-74596a254ab4.json
+*.json
+
+exps/
